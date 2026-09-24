@@ -904,7 +904,11 @@ fun HoldingScreen(
                                 }
                                 if (row.isUpcoming) {
                                     Spacer(Modifier.height(3.dp))
-                                    StatusPill("Upcoming", GainGreen)
+                                    // Says whether the figure is the fund's own
+                                    // declaration or the app's forecast —
+                                    // "Upcoming" alone read the same for both.
+                                    if (row.isAnnounced) StatusPill("Upcoming · Announced", GainGreen)
+                                    else StatusPill("Upcoming · Estimated", Color(0xFFD97706))
                                 }
                             }
                             Column(horizontalAlignment = Alignment.End) {

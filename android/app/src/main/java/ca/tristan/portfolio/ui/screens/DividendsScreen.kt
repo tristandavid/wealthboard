@@ -145,8 +145,27 @@ private fun incomeAxisLabels(values: List<Double>): List<String> {
     return values.map { ca.tristan.portfolio.ui.format.Money.compact(it) }
 }
 
-private fun daysUntil(ms: Long): Long =
-    ((ms - System.currentTimeMillis()) / (1000L * 60 * 60 * 24)).coerceAtLeast(0L)
+/**
+ * Whole CALENDAR days from today to [ms]'s date — negative once it has passed.
+ *
+ * Truncating the milliseconds left over a day's length printed "Today" for
+ * anything under 24 hours away (at 10 a.m., tomorrow's ex-date read "Today"),
+ * and clamping at zero printed "Today" for a date already gone.
+ */
+private fun daysUntil(ms: Long): Long {
+    val zone = java.time.ZoneId.systemDefault()
+    val today = java.time.LocalDate.now(zone)
+    val date = java.time.Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+    return java.time.temporal.ChronoUnit.DAYS.between(today, date)
+}
+
+private fun daysUntilLabel(days: Long): String = when {
+    days == 0L -> "Today"
+    days == 1L -> "Tomorrow"
+    days == -1L -> "Yesterday"
+    days < 0L -> "${-days} days ago"
+    else -> "in $days days"
+}
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Main screen
@@ -396,7 +415,11 @@ fun DividendsScreen(
         derivedStateOf {
             val byMonth = viewModel.projectedIncomeByMonthAndHoldingInBase(months = 12)
             buildList {
-                for (i in 1..12) {
+                // From THIS month. Starting at next month dropped a payment
+                // still due this month from both charts — TTM shows only money
+                // already received, so XEQT's Sep 29 payment, viewed on Sep 24,
+                // appeared on neither.
+                for (i in 0..11) {
                     val c = Calendar.getInstance().apply { add(Calendar.MONTH, i) }
                     val key = c.get(Calendar.YEAR) * 100 + c.get(Calendar.MONTH)
                     val lbl = c.getDisplayName(Calendar.MONTH, Calendar.SHORT, Locale.getDefault()) ?: ""
@@ -1877,9 +1900,8 @@ private fun DateInfoBlock(
                     fontWeight = FontWeight.SemiBold,
                     fontSize   = 12.sp
                 )
-                val days = daysUntil(dateMs)
                 Text(
-                    if (days == 0L) "Today" else "in $days day${if (days != 1L) "s" else ""}",
+                    daysUntilLabel(daysUntil(dateMs)),
                     style = MaterialTheme.typography.labelSmall,
                     color = dotColor,
                     fontWeight = FontWeight.Medium

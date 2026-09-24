@@ -1458,14 +1458,32 @@ final class PortfolioViewModel: ObservableObject {
     /// Forward twelve-month income for one holding, in its own currency — the
     /// figure the tax notes put a dollar cost on.
     func forwardAnnualIncome(for holding: Holding) -> Double? {
-        guard let row = upcomingDividends.first(where: { $0.holding.id == holding.id }) else {
-            return nil
-        }
-        let frequency = row.info.paymentFrequencyPerYear ?? 4
-        guard let perUnit = row.info.perPaymentAmount
-            ?? row.info.estimatedAnnualRate.map({ $0 / Double(frequency) }) else { return nil }
-        let income = perUnit * holding.units * Double(frequency)
+        // By SECURITY. A card is keyed on the security and named after its
+        // largest slice, so matching on the row id found nothing for the same
+        // fund's smaller slices in other accounts — their tax notes had no
+        // income to put a cost on.
+        guard let row = upcomingDividends.first(where: { $0.id == holding.securityKey }),
+              let perUnit = forwardAnnualPerUnit(row) else { return nil }
+        let income = perUnit * holding.units
         return income > 0 ? income : nil
+    }
+
+    /// Next twelve months of per-unit distributions for one card.
+    ///
+    /// The fund's own seasonal projection first — the same one the income
+    /// charts draw. "Next payment × frequency" was used here before, and for a
+    /// fund with lumpy quarters it depends on WHICH quarter is next: XEQT's
+    /// small September payment × 4 is barely half its real annual income, its
+    /// December payment × 4 well over it, so every tax figure built on it
+    /// swung from quarter to quarter.
+    private func forwardAnnualPerUnit(_ row: UpcomingDividendRow) -> Double? {
+        let frequency = Double(max(row.info.paymentFrequencyPerYear ?? 4, 1))
+        return DividendForecast.forwardAnnualPerUnit(
+            history: row.history.map { ($0.date, $0.perUnit) },
+            upcoming: row.info
+        )
+            ?? row.info.estimatedAnnualRate
+            ?? row.info.perPaymentAmount.map { $0 * frequency }
     }
 
     /// Dividend tax on a stated annual income, rather than on the one this view
@@ -1540,10 +1558,8 @@ final class PortfolioViewModel: ObservableObject {
                 )
                 guard rate > 0 else { continue }
 
-                let frequency = max(row.info.paymentFrequencyPerYear ?? 4, 1)
-                guard let perPayment = row.info.perPaymentAmount
-                    ?? row.info.estimatedAnnualRate.map({ $0 / Double(frequency) }) else { continue }
-                let annualIncome = perPayment * holding.units * Double(frequency)
+                guard let perUnit = forwardAnnualPerUnit(row) else { continue }
+                let annualIncome = perUnit * holding.units
                 guard annualIncome > 0 else { continue }
 
                 total += fx.convert(

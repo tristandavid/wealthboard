@@ -25,7 +25,9 @@ data class PayoutRow(
     val payDateMs: Long?,
     val amountPerUnit: Double,
     val totalForPosition: Double,
-    val isUpcoming: Boolean
+    val isUpcoming: Boolean,
+    /** True when an upcoming row is the amount the fund declared, not a forecast. */
+    val isAnnounced: Boolean = false
 ) {
     /** The date the row is filed under: when the cash lands, where that is
      *  known, and the ex-date only as a stand-in. */

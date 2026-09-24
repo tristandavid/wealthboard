@@ -58,7 +58,13 @@ enum MarketCalendar {
         // North America only, deliberately. This gates the background quote
         // refresh, which runs on New York hours — a London or Manila holiday
         // must not stop it.
-        if !northAmericanClosures(on: day).isEmpty { return false }
+        //
+        // Closed only when BOTH are. This used to treat either market's
+        // holiday as a full closure, so on US Thanksgiving — TSX trading
+        // normally — no price alert on a Canadian holding was evaluated, and
+        // every Canadian holiday did the same to US listings.
+        let closed = Set(northAmericanClosures(on: day).map(\.countryCode))
+        if closed.isSuperset(of: ["US", "CA"]) { return false }
 
         let minutes = (components.hour ?? 0) * 60 + (components.minute ?? 0)
         return minutes >= openMinutes && minutes < closeMinutes

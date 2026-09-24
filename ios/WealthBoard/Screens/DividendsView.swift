@@ -222,7 +222,11 @@ struct DividendsView: View {
     private var monthlyBarsFWD: [StackedIncomeBar] {
         let byMonth = viewModel.projectedIncomeByMonthAndHolding(months: 12)
         var bars: [StackedIncomeBar] = []
-        for offset in 1...12 {
+        // From THIS month. Starting at next month dropped a payment still due
+        // this month from both charts — TTM shows only money already
+        // received, so XEQT's Sep 29 payment, viewed on Sep 24, appeared on
+        // neither.
+        for offset in 0...11 {
             guard let bucket = calendar.date(byAdding: .month, value: offset, to: now) else { continue }
             let components = calendar.dateComponents([.year, .month], from: bucket)
             guard let year = components.year, let month = components.month else { continue }

@@ -1013,11 +1013,19 @@ class PortfolioViewModel(application: Application) : AndroidViewModel(applicatio
             )
             if (rate <= 0.0) continue
 
+            // The fund's own seasonal year, not "next payment × frequency":
+            // for a fund with lumpy quarters that depends on WHICH quarter is
+            // next (XEQT's small September × 4 is barely half its real annual
+            // income), so the drag swung from quarter to quarter.
             val freq = (row.info.paymentFrequencyPerYear ?: 4).coerceAtLeast(1)
-            val perPayment = row.info.perPaymentAmount
-                ?: row.info.estimatedAnnualRate?.div(freq.toDouble())
+            val perUnitYear = ca.tristan.portfolio.data.DividendForecast.forwardAnnualPerUnit(
+                history = row.history,
+                upcoming = row.info
+            )
+                ?: row.info.estimatedAnnualRate
+                ?: row.info.perPaymentAmount?.times(freq.toDouble())
                 ?: continue
-            val annualIncome = perPayment * holding.units * freq
+            val annualIncome = perUnitYear * holding.units
             if (annualIncome <= 0.0) continue
 
             total += ca.tristan.portfolio.data.FxRates.convert(
@@ -2258,7 +2266,8 @@ class PortfolioViewModel(application: Application) : AndroidViewModel(applicatio
                             payDateMs = u.payDateMillis,
                             amountPerUnit = amt,
                             totalForPosition = amt * positionUnits,
-                            isUpcoming = true
+                            isUpcoming = true,
+                            isAnnounced = u.isAnnounced
                         )
                     )
                 }

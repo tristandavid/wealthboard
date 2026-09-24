@@ -59,7 +59,13 @@ object MarketCalendar {
         // refresh, which runs on New York hours — a London or Manila holiday
         // must not stop it, and once the calendar covers those markets a plain
         // closuresFor() check would do exactly that.
-        if (northAmericanClosures(date).isNotEmpty()) return false
+        //
+        // Closed only when BOTH are. This used to treat either market's
+        // holiday as a full closure, so on US Thanksgiving — TSX trading
+        // normally — no Canadian holding was re-priced and no price alert on
+        // one was evaluated, and every Canadian holiday did the same to US
+        // listings.
+        if (bothNorthAmericanMarketsClosed(date)) return false
 
         val time = local.toLocalTime()
         return !time.isBefore(OPEN_TIME) && time.isBefore(CLOSE_TIME)
@@ -78,7 +84,7 @@ object MarketCalendar {
         repeat(10) {
             val isWeekend = candidate.dayOfWeek == DayOfWeek.SATURDAY ||
                 candidate.dayOfWeek == DayOfWeek.SUNDAY
-            if (!isWeekend && northAmericanClosures(candidate).isEmpty()) {
+            if (!isWeekend && !bothNorthAmericanMarketsClosed(candidate)) {
                 val open = candidate.atTime(OPEN_TIME).atZone(EXCHANGE_ZONE).toInstant().toEpochMilli()
                 if (open > nowMs) return open - nowMs
             }
@@ -123,6 +129,9 @@ object MarketCalendar {
     /** Whether this calendar has holiday data for [countryCode] at all. */
     fun covers(countryCode: String?): Boolean =
         countryCode?.uppercase()?.let { MARKETS.containsKey(it) } == true
+
+    private fun bothNorthAmericanMarketsClosed(date: LocalDate): Boolean =
+        northAmericanClosures(date).map { it.countryCode }.toSet().containsAll(listOf("US", "CA"))
 
     private fun northAmericanClosures(date: LocalDate): List<MarketClosure> =
         listOf("US", "CA").mapNotNull { code ->
