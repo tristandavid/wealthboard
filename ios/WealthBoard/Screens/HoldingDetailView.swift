@@ -31,10 +31,8 @@ struct HoldingDetailView: View {
     /// the currency the position actually trades in.
     @State private var viewInBase = true
 
-    /// Width of the tax carousel, measured rather than assumed — the cards
-    /// inside it have to be sized in points, and `UIScreen` is the wrong answer
-    /// on a split-screen iPad.
-    @State private var taxPagerWidth: CGFloat = 0
+    /// The account the tax deck is showing.
+    @State private var taxPage = 0
 
     private var holding: Holding? { viewModel.holding(holdingId) }
 
@@ -431,55 +429,57 @@ struct HoldingDetailView: View {
         let rows = slices.isEmpty ? [holding] : slices.map(\.holding)
 
         if rows.count > 1 {
-            // Side by side, not stacked.
+            // A swipeable deck, one page per account — the same shape as the
+            // Upcoming Dividends deck.
             //
-            // Three accounts meant three full-height cards down the page, each
-            // repeating the same explanatory paragraph and the same
-            // disclaimer, so the screen below the position turned into several
-            // screens of near-identical text and the reader had to scroll past
-            // all of it to reach the dividends. Swiped, the three are the same
-            // card seen three ways — which is what they are — and the boilerplate
-            // they share is said once, underneath.
+            // Stacked, three accounts were three full-height cards each
+            // repeating the same paragraph and disclaimer, several screens of
+            // near-identical text between the position and the dividends. The
+            // free-scrolling row that replaced them stopped wherever the
+            // finger let go and left each card its own height, so it read as
+            // a strip of clipped cards rather than as pages. Now each swipe
+            // lands on one account, every card is the height of the tallest,
+            // and the dots say how many there are.
             VStack(alignment: .leading, spacing: 8) {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 12) {
-                        ForEach(rows, id: \.id) { row in
-                            Group {
-                                if viewModel.needsTaxTreatmentPrompt(for: row) {
-                                    taxSetupCard(row)
-                                } else {
-                                    taxFiguresCard(row, showsFooter: false)
-                                }
-                            }
-                            // Just short of the full width, so the edge of the
-                            // next card is visible and the row reads as
-                            // something to swipe rather than as a card that has
-                            // been clipped.
-                            .frame(width: max(taxPagerWidth - 44, 200), alignment: .top)
+                // Sizing layer: every card, laid out at the page width but
+                // never shown. The stack takes the TALLEST one's height, and
+                // the pager drawn over it gets exactly that frame — so cards
+                // of different lengths do not make the deck resize as it is
+                // swiped.
+                ZStack(alignment: .top) {
+                    ForEach(rows, id: \.id) { row in
+                        taxDeckPage(row, fillsHeight: false)
+                            .padding(.horizontal, WbDimens.screenPadding)
+                    }
+                }
+                .opacity(0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                .overlay {
+                    TabView(selection: $taxPage) {
+                        ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                            taxDeckPage(row, fillsHeight: true)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                                .padding(.horizontal, WbDimens.screenPadding)
+                                .tag(index)
                         }
                     }
-                    .padding(.horizontal, WbDimens.screenPadding)
+                    .tabViewStyle(.page(indexDisplayMode: .never))
                 }
-                .background(
-                    GeometryReader { geo in
-                        Color.clear.preference(key: TaxPagerWidthKey.self, value: geo.size.width)
-                    }
-                )
-                .onPreferenceChange(TaxPagerWidthKey.self) { taxPagerWidth = $0 }
 
-                Text(swipeHint(otherCount: rows.count - 1))
-                    .font(.system(size: 11))
-                    .foregroundStyle(Palette.onSurfaceVariant(scheme))
-                    .padding(.horizontal, WbDimens.screenPadding)
+                DeckDots(count: rows.count, current: taxPage)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 2)
 
                 taxFooter
                     .padding(.horizontal, WbDimens.screenPadding)
             }
-            // Cancels the screen's own gutter so the row can run edge to edge.
-            // A horizontal scroller that stops 16pt short on both sides reads
-            // as a clipped card rather than as a carousel, and the card coming
-            // next is cut off before the reader ever sees it.
+            // Cancels the screen's own gutter so the deck can run edge to edge,
+            // the way the Upcoming Dividends deck does.
             .padding(.horizontal, -WbDimens.screenPadding)
+            .onChange(of: rows.count) { count in
+                if taxPage >= count { taxPage = max(count - 1, 0) }
+            }
         } else {
             // A single-account position renders exactly as it always did.
             ForEach(rows, id: \.id) { row in
@@ -492,12 +492,15 @@ struct HoldingDetailView: View {
         }
     }
 
-    /// Names how many more cards there are, since a carousel with its next
-    /// card peeking is still easy to read as a single card that has been cut.
-    private func swipeHint(otherCount: Int) -> String {
-        otherCount == 1
-            ? "Swipe for the other account"
-            : "Swipe for the other \(otherCount) accounts"
+    /// One page of the tax deck: the setup question for an account with no
+    /// tax treatment yet, otherwise its figures.
+    @ViewBuilder
+    private func taxDeckPage(_ row: Holding, fillsHeight: Bool) -> some View {
+        if viewModel.needsTaxTreatmentPrompt(for: row) {
+            taxSetupCard(row, fillsHeight: fillsHeight)
+        } else {
+            taxFiguresCard(row, showsFooter: false, fillsHeight: fillsHeight, alwaysShowCard: true)
+        }
     }
 
     /// The help link and the disclaimer, which say the same thing whatever
@@ -538,7 +541,7 @@ struct HoldingDetailView: View {
     /// A missing treatment silently disables every tax figure for everything in
     /// the account, so the gap is surfaced rather than left to look like "no
     /// tax applies".
-    private func taxSetupCard(_ holding: Holding) -> some View {
+    private func taxSetupCard(_ holding: Holding, fillsHeight: Bool = false) -> some View {
         WbCard {
             Text(accountHeading(holding, prefix: "How is", suffix: "taxed?"))
                 .font(.system(size: 14, weight: .semibold))
@@ -578,11 +581,20 @@ struct HoldingDetailView: View {
                 }
                 .buttonStyle(.plain)
             }
+
+            // In the deck, the card stretches to the page so every account's
+            // card is the same height.
+            if fillsHeight { Spacer(minLength: 0) }
         }
     }
 
     @ViewBuilder
-    private func taxFiguresCard(_ holding: Holding, showsFooter: Bool = true) -> some View {
+    private func taxFiguresCard(
+        _ holding: Holding,
+        showsFooter: Bool = true,
+        fillsHeight: Bool = false,
+        alwaysShowCard: Bool = false
+    ) -> some View {
         let income = annualIncome(for: holding)
         let notes = viewModel.taxNotes(for: holding, annualDividendIncome: income)
         let dividendTax = income.flatMap {
@@ -601,7 +613,9 @@ struct HoldingDetailView: View {
             unrealizedGain: sliceGain
         )
 
-        if !notes.isEmpty || dividendTax != nil || gainsTax != nil {
+        // In the deck every account gets a page, even one with nothing to
+        // report — an empty slot would leave a dot that swipes to nothing.
+        if alwaysShowCard || !notes.isEmpty || dividendTax != nil || gainsTax != nil {
             WbCard {
                 Text(accountHeading(holding, prefix: "Tax in", suffix: ""))
                     .font(.wbTitleMedium)
@@ -687,6 +701,16 @@ struct HoldingDetailView: View {
                         .fixedSize(horizontal: false, vertical: true)
                         .padding(.top, 8)
                 }
+
+                if notes.isEmpty && dividendTax == nil && gainsTax == nil {
+                    Text("Nothing is deducted from this account's dividends.")
+                        .font(.wbBodySmall)
+                        .foregroundStyle(Palette.onSurfaceVariant(scheme))
+                }
+
+                // In the deck, the card stretches to the page so every
+                // account's card is the same height.
+                if fillsHeight { Spacer(minLength: 0) }
             }
         }
     }
@@ -1170,10 +1194,25 @@ private struct GrowthCell: View {
     }
 }
 
-/// Carries the tax carousel's measured width out of its `GeometryReader`.
-private struct TaxPagerWidthKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
+/// Page dots under a deck, matching the Upcoming Dividends deck's.
+private struct DeckDots: View {
+    @Environment(\.colorScheme) private var scheme
+
+    let count: Int
+    let current: Int
+
+    var body: some View {
+        HStack(spacing: 6) {
+            ForEach(0..<count, id: \.self) { index in
+                Circle()
+                    .fill(index == current
+                          ? Palette.accent(scheme)
+                          : Palette.onSurfaceVariant(scheme).opacity(0.35))
+                    .frame(width: index == current ? 7 : 5, height: index == current ? 7 : 5)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: current)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Account \(current + 1) of \(count)")
     }
 }

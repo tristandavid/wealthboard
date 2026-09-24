@@ -111,7 +111,9 @@ struct TaxSettingsView: View {
             // goes with it — an answer the user gave needs no provenance.
             if viewModel.isResidencyAuto {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Set from your device's region (\(viewModel.residency.label)).")
+                    Text(viewModel.isResidencyFromAccounts
+                         ? "Set from your account types (\(viewModel.residency.label))."
+                         : "Set from your device's region (\(viewModel.residency.label)).")
                         .font(.wbBodySmall)
                         .fontWeight(.medium)
                         .foregroundStyle(Palette.onSurface(scheme))

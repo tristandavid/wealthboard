@@ -54,7 +54,9 @@ struct PortfolioView: View {
                 PortfolioTrendCard(
                     series: valueSeries,
                     selected: $valueRange,
-                    baseCurrency: dashboard.baseCurrency
+                    baseCurrency: dashboard.baseCurrency,
+                    dayChangeAbsolute: dashboard.dayChangeAbsolute,
+                    dayChangePercent: dashboard.dayChangePercent
                 )
                 .padding(.horizontal, WbDimens.screenPadding)
 
@@ -388,6 +390,19 @@ private struct PortfolioTrendCard: View {
     let series: PortfolioSeries
     @Binding var selected: PortfolioRange
     let baseCurrency: String
+    let dayChangeAbsolute: Double
+    let dayChangePercent: Double
+
+    /// On 1D the badge is TODAY's change — measured from each holding's
+    /// previous close, the same figure the Total value card prints above it.
+    ///
+    /// It used to be the distance the intraday line travelled, which starts at
+    /// the session's first bar rather than yesterday's close. On a day that
+    /// gaps down at the open the two disagree badly: -1.08% "today" on one card
+    /// and -0.48% "1D" on the next, for the same portfolio on the same day.
+    private var isOneDay: Bool { selected.label == "1D" }
+    private var badgeGain: Double { isOneDay ? dayChangeAbsolute : series.gain }
+    private var badgePercent: Double { isOneDay ? dayChangePercent : series.gainPercent }
 
     var body: some View {
         // Thin padding: every point of card inset is width the line does not
@@ -397,17 +412,20 @@ private struct PortfolioTrendCard: View {
                 Text("Portfolio value")
                     .font(.wbTitleMedium)
                     .foregroundStyle(Palette.onSurface(scheme))
-                Spacer()
-                if !series.isEmpty {
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                if isOneDay || !series.isEmpty {
                     // The return the HOLDINGS produced, not the distance the
                     // line travelled. A month containing a deposit moves the
                     // line by the size of the deposit, and printing that as a
                     // percentage announced a 55% month on a market that moved
                     // about two.
-                    Text("\(Money.signedPercent(series.gainPercent))  \(selected.label)")
+                    Text("\(Money.signedPercent(badgePercent))  \(selected.label)")
                         .font(.wbBodyMedium)
                         .fontWeight(.semibold)
-                        .foregroundStyle(Palette.change(series.gain))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .foregroundStyle(Palette.change(badgeGain))
                 }
             }
 
@@ -436,6 +454,10 @@ private struct PortfolioTrendCard: View {
             // fixed to stop making — that the distance travelled is the return.
             AreaChart(
                 points: series.chartPoints,
+                // Coloured by the same change the badge prints, so a day that
+                // is down overall is never drawn green because it recovered a
+                // little after the open.
+                lineColor: isOneDay ? (dayChangeAbsolute >= 0 ? Brand.gain : Brand.loss) : nil,
                 intraday: selected.interval.hasSuffix("m") || selected.interval.hasSuffix("h"),
                 rangeLabel: selected.label,
                 // Whole dollars in the scrub readout: cents on a six-figure

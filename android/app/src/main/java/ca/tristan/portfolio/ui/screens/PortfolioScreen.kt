@@ -209,7 +209,9 @@ fun MyPortfolioScreen(
                     series        = valueSeries,
                     ranges        = PORTFOLIO_RANGES,
                     selected      = valueRange,
-                    onRangeChange = { valueRange = it }
+                    onRangeChange = { valueRange = it },
+                    dayChangeAbs  = dashboard.dayChangeAbsolute,
+                    dayChangePct  = dashboard.dayChangePercent
                 )
             }
             item { Spacer(Modifier.height(12.dp)) }
@@ -560,9 +562,19 @@ private fun PortfolioTrendCard(
     series: PortfolioSeries,
     ranges: List<PortfolioRange>,
     selected: PortfolioRange,
-    onRangeChange: (PortfolioRange) -> Unit
+    onRangeChange: (PortfolioRange) -> Unit,
+    dayChangeAbs: Double,
+    dayChangePct: Double
 ) {
     val history = series.points
+    // On 1D the badge is TODAY's change — measured from each holding's
+    // previous close, the same figure the Total value card prints above it.
+    //
+    // It used to be the distance the intraday line travelled, which starts at
+    // the session's first bar, not at yesterday's close. On a day that gaps
+    // down at the open the two disagree badly: -1.08% "today" on one card and
+    // -0.48% "1D" on the next, for the same portfolio on the same day.
+    val isOneDay = selected.label == "1D"
     Card(
         modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         shape = RoundedCornerShape(16.dp),
@@ -577,20 +589,25 @@ private fun PortfolioTrendCard(
             ) {
                 Text(
                     "Portfolio value",
-                    style = MaterialTheme.typography.titleMedium
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-                if (!series.isEmpty) {
+                if (isOneDay || !series.isEmpty) {
                     // The return the HOLDINGS produced, not the distance the
                     // line travelled. A month containing a deposit moves the
                     // line by the size of the deposit, and printing that as a
                     // percentage announced a 55% month on a market that moved
                     // about two.
-                    val pct = series.gainPercent
-                    val up = series.gain >= 0
+                    val pct = if (isOneDay) dayChangePct else series.gainPercent
+                    val up = (if (isOneDay) dayChangeAbs else series.gain) >= 0
+                    Spacer(Modifier.width(8.dp))
                     Text(
                         "${if (up) "+" else ""}${String.format("%.2f", pct)}%  ${selected.label}",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
+                        maxLines = 1,
+                        softWrap = false,
                         color = if (up) ca.tristan.portfolio.ui.theme.GainGreen
                                 else ca.tristan.portfolio.ui.theme.LossRed
                     )
@@ -660,7 +677,11 @@ private fun PortfolioTrendCard(
                     bars = history.map { (ts, value) ->
                         HistoryBar(timestampMs = ts, close = value, volume = null)
                     },
-                    positive = history.last().second >= history.first().second,
+                    // Coloured by the same change the badge prints, so a day
+                    // that is down overall is never drawn green because it
+                    // recovered a little after the open.
+                    positive = if (isOneDay) dayChangeAbs >= 0
+                               else history.last().second >= history.first().second,
                     rangeLabel = selected.label,
                     // Holdings can span several exchanges, so there is no single
                     // market clock to use — device time is the honest choice.

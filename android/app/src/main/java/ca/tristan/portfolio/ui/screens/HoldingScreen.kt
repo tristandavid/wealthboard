@@ -451,6 +451,34 @@ fun HoldingScreen(
             // withholding is deducted before the money arrives and never shows
             // up as a line on a statement, so the yield figures below are gross
             // of a cost the reader cannot otherwise see.
+            val taxSlices = d?.slices?.takeIf { it.isNotEmpty() } ?: listOfNotNull(d?.holding)
+            val residencyForTax = viewModel.residency.collectAsStateWithLifecycle().value
+
+            // What each account's card has to say, worked out up front so the
+            // layout below knows how many accounts actually have a card.
+            val taxCards = taxSlices.map { slice ->
+                val account = accountsForTax.firstOrNull { it.id == slice.accountId }
+                // Scaled to THIS slice's units: the trailing per-unit
+                // distribution is a property of the fund, so the slice's share
+                // of the income is simply its own unit count.
+                val annualDivIncome = d?.trailingAnnualPerUnit?.times(slice.units)
+                // The unrealized gain on THIS slice, not on the whole position —
+                // the other accounts' gains are not taxable here, and two of
+                // them may not be taxable anywhere.
+                val sliceGain = slice.costBasis?.let { cost ->
+                    (d?.quote?.price ?: slice.lastKnownPrice ?: slice.manualPrice ?: 0.0) * slice.units - cost
+                }
+                TaxSliceUi(
+                    slice = slice,
+                    accountName = account?.displayName,
+                    needsSetup = viewModel.needsTaxTreatmentPrompt(slice),
+                    notes = viewModel.taxNotesFor(holding = slice, annualDividendIncome = annualDivIncome),
+                    divTax = viewModel.dividendTaxEstimateFor(slice, annualDivIncome),
+                    sliceGain = sliceGain,
+                    gainsTax = viewModel.capitalGainsTaxEstimateFor(slice, sliceGain)
+                )
+            }.filter { it.needsSetup || it.hasFigures }
+
             // Asked right here, on the screen the answer affects.
             //
             // The picker used to live on AccountScreen — which, it turns out,
@@ -459,28 +487,16 @@ fun HoldingScreen(
             // impossible to find. Accounts are not surfaced anywhere else
             // either, so the holding is the only place the question can
             // sensibly be put to the user.
-            // One block per account, because tax is the one thing that
-            // genuinely differs between two slices of the same fund: the TFSA
-            // slice keeps nothing it loses to withholding, the RRSP slice
-            // loses nothing at all. A single-account position renders exactly
-            // as it always did.
-            val taxSlices = d?.slices?.takeIf { it.isNotEmpty() } ?: listOfNotNull(d?.holding)
-            taxSlices.forEach { slice ->
-            val sliceAccount = accountsForTax.firstOrNull { it.id == slice.accountId }
-            val sliceLabel =
-                if (d?.isSplit == true && sliceAccount != null) " in ${sliceAccount.displayName}" else ""
-
-            val taxNotes = viewModel.taxNotesFor(
-                holding = slice,
-                annualDividendIncome = d?.trailingAnnualPerUnit?.times(slice.units)
-            )
-            val needsTaxSetup = viewModel.needsTaxTreatmentPrompt(slice)
-            if (needsTaxSetup) {
-                val accountId = slice.accountId
-                SectionHeader("Tax$sliceLabel")
-                WbCard(Modifier.padding(horizontal = WbDimens.ScreenPadding)) {
+            @Composable
+            fun TaxSetupCard(ui: TaxSliceUi, heading: String?, modifier: Modifier) {
+                val accountId = ui.slice.accountId
+                WbCard(modifier) {
+                    if (heading != null) {
+                        Text(heading, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(10.dp))
+                    }
                     Text(
-                        "How is ${sliceAccount?.displayName ?: "this account"} taxed?",
+                        "How is ${ui.accountName ?: "this account"} taxed?",
                         fontWeight = FontWeight.SemiBold, fontSize = 14.sp
                     )
                     Spacer(Modifier.height(4.dp))
@@ -492,7 +508,6 @@ fun HoldingScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                     Spacer(Modifier.height(10.dp))
-                    val residencyCode = viewModel.residency.collectAsStateWithLifecycle().value.code
                     ca.tristan.portfolio.data.db.TaxTreatment.values().forEach { t ->
                         Row(
                             modifier = Modifier
@@ -506,7 +521,7 @@ fun HoldingScreen(
                             Column {
                                 Text(t.label(), fontSize = 13.sp, fontWeight = FontWeight.Medium)
                                 Text(
-                                    ca.tristan.portfolio.tax.TaxRules.examplesFor(t, ca.tristan.portfolio.tax.Residency.fromCode(residencyCode)),
+                                    ca.tristan.portfolio.tax.TaxRules.examplesFor(t, residencyForTax),
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -515,24 +530,20 @@ fun HoldingScreen(
                     }
                 }
             }
-            // Estimated figures, shown only when the user has supplied a rate.
-            //
-            // Scaled to THIS slice's units: the trailing per-unit distribution
-            // is a property of the fund, so the slice's share of the income is
-            // simply its own unit count.
-            val annualDivIncome = d?.trailingAnnualPerUnit?.times(slice.units)
-            val divTax = viewModel.dividendTaxEstimateFor(slice, annualDivIncome)
-            // The unrealized gain on THIS slice, not on the whole position —
-            // the other accounts' gains are not taxable here, and two of them
-            // may not be taxable anywhere.
-            val sliceGain = slice.costBasis?.let { cost ->
-                (d?.quote?.price ?: slice.lastKnownPrice ?: slice.manualPrice ?: 0.0) * slice.units - cost
-            }
-            val gainsTax = viewModel.capitalGainsTaxEstimateFor(slice, sliceGain)
 
-            if (taxNotes.isNotEmpty() || divTax != null || gainsTax != null) {
-                SectionHeader("Tax$sliceLabel")
-                WbCard(Modifier.padding(horizontal = WbDimens.ScreenPadding)) {
+            // Estimated figures, shown only when the user has supplied a rate,
+            // then the notes. The disclaimer is left off inside the deck,
+            // where it says the same thing on every card; it is printed once
+            // under it instead.
+            @Composable
+            fun TaxFiguresCard(ui: TaxSliceUi, heading: String?, showDisclaimer: Boolean, modifier: Modifier) {
+                val divTax = ui.divTax
+                val gainsTax = ui.gainsTax
+                WbCard(modifier) {
+                    if (heading != null) {
+                        Text(heading, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(Modifier.height(12.dp))
+                    }
                     if (divTax != null && divTax.totalTax > 0.0) {
                         StatPair(
                             "Dividend income (est.)", money(divTax.grossIncome),
@@ -558,14 +569,14 @@ fun HoldingScreen(
                     }
                     if (gainsTax != null && gainsTax > 0.0) {
                         StatPair(
-                            "If you sold today", money(sliceGain ?: 0.0),
+                            "If you sold today", money(ui.sliceGain ?: 0.0),
                             "Estimated tax", money(gainsTax)
                         )
                         Spacer(Modifier.height(12.dp))
                         WbDivider()
                         Spacer(Modifier.height(12.dp))
                     }
-                    taxNotes.forEachIndexed { index, note ->
+                    ui.notes.forEachIndexed { index, note ->
                         if (index > 0) {
                             Spacer(Modifier.height(12.dp))
                             WbDivider()
@@ -600,15 +611,61 @@ fun HoldingScreen(
                             }
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        ca.tristan.portfolio.tax.TaxRules.DISCLAIMER,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                    if (showDisclaimer) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            ca.tristan.portfolio.tax.TaxRules.DISCLAIMER,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
+
+            if (taxCards.size > 1) {
+                // One card per account, side by side — the same swipeable deck
+                // the Upcoming Dividends section uses.
+                //
+                // Tax is the one thing that genuinely differs between two
+                // slices of the same fund (the TFSA slice keeps nothing it
+                // loses to withholding, the RRSP slice loses nothing at all),
+                // so each account gets its own card. Stacked, three accounts
+                // were three full-height cards repeating the same paragraph
+                // and disclaimer, several screens of near-identical text
+                // between the position and the dividends.
+                SectionHeader("Tax by account")
+                EqualHeightDeck(pageCount = taxCards.size) { page, pageModifier ->
+                    val ui = taxCards[page]
+                    val heading = "Tax in ${ui.accountName ?: "this account"}"
+                    if (ui.needsSetup) TaxSetupCard(ui, heading, pageModifier)
+                    else TaxFiguresCard(ui, heading, showDisclaimer = false, modifier = pageModifier)
+                }
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    ca.tristan.portfolio.tax.TaxRules.DISCLAIMER,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = WbDimens.ScreenPadding)
+                )
+            } else {
+                // A single card renders exactly as it always did.
+                taxCards.forEach { ui ->
+                    val sliceLabel =
+                        if (d?.isSplit == true && ui.accountName != null) " in ${ui.accountName}" else ""
+                    if (ui.needsSetup) {
+                        SectionHeader("Tax$sliceLabel")
+                        TaxSetupCard(ui, heading = null, modifier = Modifier.padding(horizontal = WbDimens.ScreenPadding))
+                    }
+                    if (ui.hasFigures) {
+                        SectionHeader("Tax$sliceLabel")
+                        TaxFiguresCard(
+                            ui, heading = null, showDisclaimer = true,
+                            modifier = Modifier.padding(horizontal = WbDimens.ScreenPadding)
+                        )
+                    }
+                }
             }
 
             // ── Dividends ─────────────────────────────────────────────────
@@ -1391,5 +1448,88 @@ private fun YieldHistoryChart(
             radius = 3.5.dp.toPx(),
             center = Offset(x(points.lastIndex), y(values.last()))
         )
+    }
+}
+
+/** Everything one account's tax card shows — see the Tax section of [HoldingScreen]. */
+private class TaxSliceUi(
+    val slice: ca.tristan.portfolio.data.db.HoldingEntity,
+    val accountName: String?,
+    val needsSetup: Boolean,
+    val notes: List<ca.tristan.portfolio.tax.TaxNote>,
+    val divTax: ca.tristan.portfolio.tax.TaxRules.DividendTaxEstimate?,
+    val sliceGain: Double?,
+    val gainsTax: Double?
+) {
+    val hasFigures: Boolean
+        get() = notes.isNotEmpty() || divTax != null || gainsTax != null
+}
+
+/**
+ * A swipeable deck of cards that all share the TALLEST card's height, with
+ * page dots underneath — the same shape as the Upcoming Dividends deck.
+ *
+ * A pager sizes itself to the pages it happens to have on screen, so cards of
+ * different lengths made the deck grow and shrink as it was swiped. Every page
+ * is measured once, off screen, at the width it will be shown at, and the
+ * pager is given the largest height before it is laid out.
+ *
+ * [page] draws page `i`, and must apply the modifier it is given to its one
+ * root card so the card can fill the deck's height.
+ */
+@Composable
+private fun EqualHeightDeck(
+    pageCount: Int,
+    page: @Composable (index: Int, modifier: Modifier) -> Unit
+) {
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { pageCount })
+    val sidePadding = 24.dp
+    Column(Modifier.fillMaxWidth()) {
+        androidx.compose.ui.layout.SubcomposeLayout(Modifier.fillMaxWidth()) { constraints ->
+            val pageWidth = (constraints.maxWidth - (sidePadding * 2).roundToPx()).coerceAtLeast(0)
+            val tallest = subcompose("sizing") {
+                for (i in 0 until pageCount) page(i, Modifier)
+            }.maxOfOrNull {
+                it.measure(androidx.compose.ui.unit.Constraints(minWidth = pageWidth, maxWidth = pageWidth)).height
+            } ?: 0
+            val deckHeight = tallest.toDp()
+            val placeables = subcompose("deck") {
+                androidx.compose.foundation.pager.HorizontalPager(
+                    state = pagerState,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = sidePadding),
+                    pageSpacing = 12.dp,
+                    verticalAlignment = Alignment.Top,
+                    modifier = Modifier.fillMaxWidth().height(deckHeight)
+                ) { i ->
+                    page(i, Modifier.fillMaxSize())
+                }
+            }.map { it.measure(constraints.copy(minHeight = 0)) }
+            val height = placeables.maxOfOrNull { it.height } ?: 0
+            layout(constraints.maxWidth, height) { placeables.forEach { it.place(0, 0) } }
+        }
+
+        if (pageCount > 1) {
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    repeat(pageCount) { i ->
+                        val active = i == pagerState.currentPage
+                        Box(
+                            modifier = Modifier
+                                .size(if (active) 7.dp else 5.dp)
+                                .background(
+                                    if (active) MaterialTheme.colorScheme.secondary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+                                    androidx.compose.foundation.shape.CircleShape
+                                )
+                        )
+                    }
+                }
+            }
+        }
     }
 }

@@ -176,6 +176,10 @@ final class PortfolioViewModel: ObservableObject {
     /// where a blank tax screen just looks like "nothing to report".
     @Published private(set) var isResidencyAuto: Bool = false
 
+    /// True while the app's guess came from the user's account names rather
+    /// than the device region — so the Taxes screen can say which.
+    @Published private(set) var isResidencyFromAccounts: Bool = Prefs.bool(Prefs.Key.residencyFromAccounts)
+
     @Published var taxRates: TaxRules.UserRates {
         didSet {
             Prefs.set(taxRates.marginalPct ?? -1, Prefs.Key.marginalRate)
@@ -263,6 +267,7 @@ final class PortfolioViewModel: ObservableObject {
     func reload() async {
         let document = await repository.load()
         accounts = document.accounts
+        applyResidencyFromAccounts()
         holdings = document.holdings
         dividends = document.dividends.sorted { $0.paidAt > $1.paidAt }
         transactions = document.transactions.sorted { $0.at > $1.at }
@@ -1431,14 +1436,38 @@ final class PortfolioViewModel: ObservableObject {
     /// Hand the answer back to the device region — the way out for someone who
     /// changed it by mistake, or moved back.
     func resetResidencyToDevice() {
-        guard let guess = Self.deviceResidency() else { return }
+        // The account names first, when they say something — they are better
+        // evidence than the region — and the device region otherwise.
+        let fromAccounts = TaxRules.residency(fromAccountNames: accounts.map(\.displayName))
+        guard let guess = fromAccounts ?? Self.deviceResidency() else { return }
         residency = guess          // clears the flag, via didSet…
         setResidencyAuto(true)     // …and this puts it back, deliberately.
+        setResidencyFromAccounts(fromAccounts != nil)
     }
 
     private func setResidencyAuto(_ value: Bool) {
         Prefs.set(value, Prefs.Key.residencyAuto)
         isResidencyAuto = value
+        if !value { setResidencyFromAccounts(false) }
+    }
+
+    private func setResidencyFromAccounts(_ value: Bool) {
+        Prefs.set(value, Prefs.Key.residencyFromAccounts)
+        isResidencyFromAccounts = value
+    }
+
+    /// Lets the user's own account names correct the device-region guess.
+    ///
+    /// Only while residency is still the app's to decide — its guess, or never
+    /// set. An answer the user picked is never overridden.
+    private func applyResidencyFromAccounts() {
+        let unchosen = isResidencyAuto || Prefs.string(Prefs.Key.residency) == nil
+        guard unchosen,
+              let inferred = TaxRules.residency(fromAccountNames: accounts.map(\.displayName)) else { return }
+        if inferred == residency && isResidencyFromAccounts { return }
+        residency = inferred       // clears the flag, via didSet…
+        setResidencyAuto(true)     // …and this puts it back: still the app's guess.
+        setResidencyFromAccounts(true)
     }
 
     func needsTaxTreatmentPrompt(for holding: Holding) -> Bool {

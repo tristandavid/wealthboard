@@ -160,6 +160,7 @@ enum Prefs {
         static let dividendGoal   = "dividend_goal_monthly"
         static let residency      = "tax_residency"
         static let residencyAuto  = "tax_residency_auto"
+        static let residencyFromAccounts = "tax_residency_from_accounts"
         static let marginalRate   = "tax_marginal_rate"
         static let preferredRate  = "tax_preferential_rate"
         static let dripEnabled    = "drip_enabled"

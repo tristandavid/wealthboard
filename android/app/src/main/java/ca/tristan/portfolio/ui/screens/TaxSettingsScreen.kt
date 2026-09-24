@@ -159,6 +159,7 @@ fun TaxSettingsScreen(
     // app's guess. Picking one from the dropdown clears the flag and the
     // note goes with it — an answer the user gave needs no provenance.
     val isAuto by viewModel.isResidencyAuto.collectAsStateWithLifecycle()
+    val fromAccounts by viewModel.residencyFromAccounts.collectAsStateWithLifecycle()
     val deviceGuess = remember { viewModel.suggestedResidency() }
     if (isAuto) {
         Surface(
@@ -168,7 +169,8 @@ fun TaxSettingsScreen(
         ) {
             Column(modifier = Modifier.padding(12.dp)) {
                 Text(
-                    "Set from your phone's region (${residency.label}).",
+                    if (fromAccounts) "Set from your account types (${residency.label})."
+                    else "Set from your phone's region (${residency.label}).",
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium
                 )

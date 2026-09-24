@@ -110,6 +110,42 @@ data class TaxNote(
 object TaxRules {
 
     /**
+     * Where the user files, as implied by the names of their own accounts, or
+     * null when the names say nothing (or say both).
+     *
+     * A far better signal than the phone's region, which is really the
+     * LANGUAGE setting's region: a Canadian whose phone is in "English (United
+     * States)" reads as a US resident, and was being told about Roth IRAs and
+     * Letters of Exemption for a TFSA. A TFSA, RRSP or FHSA exists only in
+     * Canada, and an IRA or 401(k) only in the US, so an account named for one
+     * settles the question.
+     */
+    fun residencyFromAccountNames(names: List<String>): Residency? {
+        var canada = false
+        var us = false
+        for (name in names) {
+            val tokens = name.uppercase().split(Regex("[^A-Z0-9()]+")).filter { it.isNotEmpty() }.toSet()
+            if (tokens.any { it in CANADIAN_ACCOUNT_WORDS }) canada = true
+            if (tokens.any { it in US_ACCOUNT_WORDS }) us = true
+        }
+        return when {
+            canada && !us -> Residency.CANADA
+            us && !canada -> Residency.UNITED_STATES
+            else -> null
+        }
+    }
+
+    private val CANADIAN_ACCOUNT_WORDS = setOf(
+        "TFSA", "RRSP", "FHSA", "RESP", "RRIF", "LIRA", "RDSP", "SPOUSAL",
+        // French names: CELI (TFSA), REER (RRSP), CELIAPP (FHSA), FERR (RRIF).
+        "CELI", "REER", "CELIAPP", "FERR"
+    )
+
+    private val US_ACCOUNT_WORDS = setOf(
+        "IRA", "ROTH", "401K", "401(K)", "403B", "403(B)", "HSA"
+    )
+
+    /**
      * Treaty withholding on dividends, payer country → recipient country.
      *
      * These are the standard treaty rates for individuals who have certified

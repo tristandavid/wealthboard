@@ -835,6 +835,37 @@ class PortfolioViewModel(application: Application) : AndroidViewModel(applicatio
     /** True while residency is the device's answer rather than the user's. */
     val isResidencyAuto: StateFlow<Boolean> = _isResidencyAuto
 
+    private val _residencyFromAccounts = MutableStateFlow(prefs.getBoolean(KEY_RESIDENCY_FROM_ACCOUNTS, false))
+    /** True while the app's guess came from the user's account names rather than the phone. */
+    val residencyFromAccounts: StateFlow<Boolean> = _residencyFromAccounts
+
+    init {
+        // Account names outrank the phone's region — see
+        // TaxRules.residencyFromAccountNames. Re-read whenever accounts change,
+        // so creating a TFSA corrects a wrong first guess straight away.
+        viewModelScope.launch {
+            accounts.collect { list -> applyResidencyFromAccounts(list.map { it.displayName }) }
+        }
+    }
+
+    /** True while residency is still the app's to decide: its guess, or never set. */
+    private fun residencyIsUnchosen(): Boolean =
+        _isResidencyAuto.value || prefs.getString(KEY_RESIDENCY, null) == null
+
+    private fun applyResidencyFromAccounts(accountNames: List<String>) {
+        if (!residencyIsUnchosen()) return
+        val inferred = ca.tristan.portfolio.tax.TaxRules.residencyFromAccountNames(accountNames) ?: return
+        if (inferred == _residency.value && _residencyFromAccounts.value) return
+        prefs.edit()
+            .putString(KEY_RESIDENCY, inferred.code)
+            .putBoolean(KEY_RESIDENCY_AUTO, true)
+            .putBoolean(KEY_RESIDENCY_FROM_ACCOUNTS, true)
+            .apply()
+        _residency.value = inferred
+        _isResidencyAuto.value = true
+        _residencyFromAccounts.value = true
+    }
+
     /**
      * Writes the device's region into prefs the first time, and returns it.
      *
@@ -856,20 +887,30 @@ class PortfolioViewModel(application: Application) : AndroidViewModel(applicatio
             .putString(KEY_RESIDENCY, r.code)
             // A deliberate pick is no longer the device's guess.
             .putBoolean(KEY_RESIDENCY_AUTO, false)
+            .putBoolean(KEY_RESIDENCY_FROM_ACCOUNTS, false)
             .apply()
         _residency.value = r
         _isResidencyAuto.value = false
+        _residencyFromAccounts.value = false
     }
 
-    /** Puts residency back under the device's control. */
+    /**
+     * Puts residency back under the app's control: the account names when
+     * they say something, the device's region otherwise.
+     */
     fun resetResidencyToDevice() {
-        val guess = suggestedResidency() ?: ca.tristan.portfolio.tax.Residency.OTHER
+        val fromAccounts = ca.tristan.portfolio.tax.TaxRules
+            .residencyFromAccountNames(accounts.value.map { it.displayName })
+        val guess = fromAccounts ?: suggestedResidency() ?: ca.tristan.portfolio.tax.Residency.OTHER
+        val auto = fromAccounts != null || suggestedResidency() != null
         prefs.edit()
             .putString(KEY_RESIDENCY, guess.code)
-            .putBoolean(KEY_RESIDENCY_AUTO, suggestedResidency() != null)
+            .putBoolean(KEY_RESIDENCY_AUTO, auto)
+            .putBoolean(KEY_RESIDENCY_FROM_ACCOUNTS, fromAccounts != null)
             .apply()
         _residency.value = guess
-        _isResidencyAuto.value = suggestedResidency() != null
+        _isResidencyAuto.value = auto
+        _residencyFromAccounts.value = fromAccounts != null
     }
 
     // The two tax rates the user supplies. Stored as percentages; -1 means unset.
@@ -2870,6 +2911,7 @@ private const val PORTFOLIO_FRESHNESS_MILLIS = 2L * 60L * 1000L
 private const val KEY_LAST_BACKUP_AT = "last_cloud_backup_at"
 private const val KEY_RESIDENCY = "tax_residency"
 private const val KEY_RESIDENCY_AUTO = "tax_residency_auto"
+private const val KEY_RESIDENCY_FROM_ACCOUNTS = "tax_residency_from_accounts"
 private const val KEY_MARGINAL_RATE = "tax_marginal_rate_pct"
 private const val KEY_PREF_RATE = "tax_preferential_rate_pct"
 

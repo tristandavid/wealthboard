@@ -117,6 +117,42 @@ struct TaxNote: Identifiable, Hashable {
 /// filed the right residency paperwork with their broker.
 enum TaxRules {
 
+    /// Where the user files, as implied by the names of their own accounts, or
+    /// nil when the names say nothing (or say both).
+    ///
+    /// A far better signal than the device region, which follows the LANGUAGE
+    /// setting: a Canadian whose phone is in "English (United States)" reads as
+    /// a US resident, and was being told about Roth IRAs and Letters of
+    /// Exemption for a TFSA. A TFSA, RRSP or FHSA exists only in Canada, and an
+    /// IRA or 401(k) only in the US, so an account named for one settles it.
+    static func residency(fromAccountNames names: [String]) -> Residency? {
+        var canada = false
+        var us = false
+        for name in names {
+            let tokens = Set(
+                name.uppercased()
+                    .components(separatedBy: CharacterSet.alphanumerics
+                        .union(CharacterSet(charactersIn: "()")).inverted)
+                    .filter { !$0.isEmpty }
+            )
+            if !tokens.isDisjoint(with: canadianAccountWords) { canada = true }
+            if !tokens.isDisjoint(with: usAccountWords) { us = true }
+        }
+        if canada && !us { return .canada }
+        if us && !canada { return .unitedStates }
+        return nil
+    }
+
+    private static let canadianAccountWords: Set<String> = [
+        "TFSA", "RRSP", "FHSA", "RESP", "RRIF", "LIRA", "RDSP", "SPOUSAL",
+        // French names: CELI (TFSA), REER (RRSP), CELIAPP (FHSA), FERR (RRIF).
+        "CELI", "REER", "CELIAPP", "FERR"
+    ]
+
+    private static let usAccountWords: Set<String> = [
+        "IRA", "ROTH", "401K", "401(K)", "403B", "403(B)", "HSA"
+    ]
+
     /// Treaty withholding on dividends, by the country that PAYS, for a
     /// Canadian or US resident whose broker holds their residency paperwork.
     ///
