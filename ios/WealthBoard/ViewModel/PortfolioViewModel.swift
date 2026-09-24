@@ -1802,7 +1802,8 @@ final class PortfolioViewModel: ObservableObject {
                     isExDateFallback: !hasPayDate,
                     amountPerUnit: next.perUnit,
                     totalForPosition: next.perUnit * units,
-                    isUpcoming: true
+                    isUpcoming: true,
+                    isAnnounced: next.isAnnounced
                 )
             )
         }

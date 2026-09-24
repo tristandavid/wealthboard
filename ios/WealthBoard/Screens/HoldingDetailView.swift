@@ -969,7 +969,7 @@ struct HoldingDetailView: View {
             VStack(alignment: .leading, spacing: 0) {
                 SectionHeader(
                     "Dividend Payout Schedule",
-                    subtitle: "Dates are payment dates. Upcoming is forecast; past entries come from Dividends Received"
+                    subtitle: "Dates are payment dates. Upcoming is the declared payment once the fund announces it, a forecast until then; past entries come from Dividends Received"
                 )
                 .padding(.horizontal, -WbDimens.screenPadding)
 
@@ -1008,7 +1008,13 @@ struct HoldingDetailView: View {
                                 }
 
                                 if row.isUpcoming {
-                                    StatusPill(text: "Upcoming", color: Brand.gain)
+                                    // Says whether the figure is the fund's
+                                    // own declaration or the app's forecast —
+                                    // "Upcoming" alone read the same for both.
+                                    StatusPill(
+                                        text: row.isAnnounced ? "Upcoming · Announced" : "Upcoming · Estimated",
+                                        color: row.isAnnounced ? Brand.gain : Brand.divAmber
+                                    )
                                 }
                             }
                             Spacer()

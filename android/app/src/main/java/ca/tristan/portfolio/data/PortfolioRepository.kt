@@ -981,6 +981,184 @@ class PortfolioRepository(
     suspend fun upcomingDividendFor(ticker: String): UpcomingDividend? =
         withContext(Dispatchers.IO) { YahooQuoteClient.fetchUpcomingDividend(ticker) }
 
+    /**
+     * Next expected distribution for [ticker], plus the per-unit record it came
+     * from, as (info, history).
+     *
+     * Extracted so the Dividends tab and the holding detail screen resolve the
+     * next payment exactly the same way. They used to disagree: the detail
+     * screen fetched its own, while its payout *chart* read a cached list the
+     * screen never populated — so a holding could show "Nov 9 — US$27.02
+     * upcoming" in its schedule and an entirely empty chart directly above it.
+     *
+     * Sources in order of trust: dividendhistory.org (confirmed dates and
+     * declared amounts), Yahoo's calendarEvents, then Yahoo's raw distribution
+     * events run through the same estimator.
+     */
+    /**
+     * The distribution record every income figure is bucketed on, in PAY dates.
+     *
+     * [yahooEvents] is Yahoo's events block — ex-dates only, but reaching back
+     * to the security's first ever distribution. [orgEntries] is the payout
+     * page — ex AND pay dates, but only a recent slice. Taking either one whole
+     * means giving up its counterpart's strength, so this takes the reach from
+     * one and the dates from the other.
+     *
+     * Falls back to ex-dates unchanged when no pay date exists anywhere, which
+     * is the honest answer rather than a fabricated offset.
+     */
+    private fun payDatedHistory(
+        yahooEvents: List<Pair<Long, Double>>,
+        orgEntries: List<ca.tristan.portfolio.net.DividendHistoryOrgEntry>
+    ): List<Pair<Long, Double>> {
+        val dayMs = 24L * 60 * 60 * 1000
+        val confirmedOrg = orgEntries.filter { !it.isEstimated && it.amountPerShare > 0 }
+
+        // The fund's own ex→pay gap, from the rows carrying both dates.
+        // Median rather than mean: one row with a mis-parsed date should not
+        // shift every projected payment.
+        val gaps = confirmedOrg
+            .mapNotNull { entry -> entry.payDateMs?.let { it - entry.exDateMs } }
+            .filter { it >= 0 && it <= 90 * dayMs }
+            .sorted()
+        val medianGap = if (gaps.isEmpty()) null else gaps[gaps.size / 2]
+
+        // No pay date anywhere — nothing to re-date with. Keep the old
+        // longest-record rule and stay on ex-dates.
+        if (medianGap == null) {
+            val orgAsPairs = confirmedOrg.map { it.exDateMs to it.amountPerShare }
+            return (if (yahooEvents.size >= orgAsPairs.size) yahooEvents else orgAsPairs)
+                .sortedBy { it.first }
+        }
+
+        // The two feeds can disagree by a day on the same distribution, so
+        // matching is by proximity rather than equality.
+        val tolerance = 3 * dayMs
+
+        val redated = yahooEvents.map { (exMs, amount) ->
+            val matched = confirmedOrg
+                .filter { kotlin.math.abs(it.exDateMs - exMs) <= tolerance }
+                .minByOrNull { kotlin.math.abs(it.exDateMs - exMs) }
+                ?.payDateMs
+            (matched ?: (exMs + medianGap)) to amount
+        }
+
+        // Distributions the org page knows about and Yahoo's record missed —
+        // deduplicated against what is already in, so an overlap cannot bill
+        // one payment twice.
+        val extras = confirmedOrg
+            .map { (it.payDateMs ?: (it.exDateMs + medianGap)) to it.amountPerShare }
+            .filter { candidate ->
+                redated.none { kotlin.math.abs(it.first - candidate.first) <= tolerance }
+            }
+
+        return (redated + extras).sortedBy { it.first }
+    }
+
+    suspend fun dividendRecordFor(
+        ticker: String
+    ): Pair<UpcomingDividend?, List<Pair<Long, Double>>> = withContext(Dispatchers.IO) {
+        val yahooEvents = runCatching {
+            ca.tristan.portfolio.net.YahooQuoteClient.fetchHistoricalDividendEvents(ticker)
+        }.getOrDefault(emptyList())
+
+        val scrapedOrg = runCatching {
+            ca.tristan.portfolio.net.YahooQuoteClient.fetchDividendHistoryOrg(ticker)
+        }.getOrDefault(emptyList())
+
+        // The exchange's own declared-dividend feed (TMX / Nasdaq), laid over
+        // the payout calendar. This is what finds an announcement when the
+        // calendar page is down or has not posted it yet — see DeclaredDividends.
+        val declared = runCatching {
+            ca.tristan.portfolio.net.DeclaredDividends.fetch(ticker)
+        }.getOrDefault(emptyList())
+        val orgEntries = ca.tristan.portfolio.net.DeclaredDividends.merge(scrapedOrg, declared)
+
+        // Yahoo's reach, the org feed's dates — not one or the other.
+        //
+        // This used to pick whichever list was LONGER and take its dates with
+        // it, which quietly decided something it had no business deciding:
+        // Yahoo's events block carries ex-dates only, the org feed carries pay
+        // dates, and for a fund like XEQT the two records are the same length,
+        // so the tie-break chose the date TYPE. Android landed on ex-dates and
+        // iOS, whose tie-break runs the other way, landed on pay dates — which
+        // is why one build put XEQT's year-end distribution in December and the
+        // other put it in January. Same fund, same engine, opposite answers.
+        //
+        // Pay dates are the correct ones here. Every consumer of this list is
+        // about money arriving — the "Monthly Income" bars, the trailing
+        // twelve-month total, the forward projection — and money arrives on the
+        // pay date. Nobody can spend an ex-dividend date.
+        //
+        // So: keep Yahoo's record, which reaches back to the security's first
+        // ever payment where the org feed only returns a recent page, and
+        // re-date it from the org feed. An exact match supplies a real pay
+        // date; anything older than the org page falls back to the fund's own
+        // median ex→pay gap, which is the same trick the upcoming-payment
+        // estimator already uses rather than a guess at a fixed offset.
+        // Money that has actually ARRIVED. A declared row whose pay date is
+        // still ahead is the next payment, not a received one — counting it
+        // here inflated the trailing twelve months and this year's "actual"
+        // bar with cash nobody had been paid yet.
+        val nowMs = System.currentTimeMillis()
+        val history = payDatedHistory(yahooEvents, orgEntries).filter { it.first <= nowMs }
+
+        // Sources in descending order of trust, evaluated lazily so a source
+        // is only paid for when the ones above it came up short.
+        //
+        // Each candidate is checked for a *usable* answer rather than merely a
+        // non-null one. An elvis chain took the first non-null result, which
+        // let Yahoo's quoteSummary — happy to return an object carrying an
+        // annual rate and nothing else — shadow the historical-events estimate
+        // underneath it, and a payment with no date and no per-payment amount
+        // is not something any screen can draw.
+        // `suspend` because upcomingDividendFor is — a plain
+        // function type would not accept it.
+        val eventsAsEntries = yahooEvents.map {
+            ca.tristan.portfolio.net.DividendHistoryOrgEntry(
+                exDateMs = it.first,
+                payDateMs = null,
+                amountPerShare = it.second,
+                isEstimated = false
+            )
+        }.sortedByDescending { it.exDateMs }
+
+        val candidates: List<suspend () -> UpcomingDividend?> = listOf(
+            { scrapedOrg.takeIf { it.isNotEmpty() }
+                ?.let { ca.tristan.portfolio.net.YahooQuoteClient.inferUpcomingFromHistoryOrg(orgEntries) } },
+            // No payout calendar, but the exchange has declared a payment:
+            // Yahoo's record for the shape, the declaration for the next one.
+            // Ahead of quoteSummary, which never reports an announcement.
+            { declared.takeIf { it.isNotEmpty() && eventsAsEntries.isNotEmpty() }?.let {
+                ca.tristan.portfolio.net.YahooQuoteClient.inferUpcomingFromHistoryOrg(
+                    ca.tristan.portfolio.net.DeclaredDividends.merge(eventsAsEntries, declared)
+                )
+            } },
+            { upcomingDividendFor(ticker) },
+            {
+                eventsAsEntries.takeIf { it.size >= 2 }?.let { events ->
+                    ca.tristan.portfolio.net.YahooQuoteClient.inferUpcomingFromHistoryOrg(events)
+                }
+            },
+            // Nothing but the declaration itself.
+            { declared.takeIf { it.isNotEmpty() }
+                ?.let { ca.tristan.portfolio.net.YahooQuoteClient.inferUpcomingFromHistoryOrg(it) } }
+        )
+
+        fun usable(d: UpcomingDividend?) =
+            d != null && d.exDividendDateMillis != null && d.perPaymentAmount != null
+
+        var best: UpcomingDividend? = null
+        for (candidate in candidates) {
+            val value = runCatching { candidate() }.getOrNull() ?: continue
+            // Keep the first answer as a floor, so a partial result is still
+            // better than nothing if every source turns out to be partial.
+            if (best == null) best = value
+            if (usable(value)) { best = value; break }
+        }
+        best to history
+    }
+
     // ---- Transactions (buy / sell / DRIP) ----
 
     fun observeTransactions(): Flow<List<TransactionEntity>> = transactionDao.observeAll()

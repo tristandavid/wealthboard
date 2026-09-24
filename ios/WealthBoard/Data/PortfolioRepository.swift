@@ -1098,9 +1098,10 @@ final class PortfolioRepository {
 
     /// The next expected distribution for a ticker, and the record it came from.
     func upcomingDividend(ticker: String) async -> (UpcomingDividend?, [(Date, Double)]) {
-        let history = await client.fetchHistoricalDividends(ticker: ticker)
-        let upcoming = await client.fetchUpcomingDividend(ticker: ticker)
-        return (upcoming, history)
+        // One pass over the sources for both halves, so the card and the
+        // record under it are built from the same answer.
+        let record = await client.fetchDividendRecord(ticker: ticker)
+        return (record.upcoming, record.history)
     }
 
     /// Extended-hours prints for many symbols in one request.

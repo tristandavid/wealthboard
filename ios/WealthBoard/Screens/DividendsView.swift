@@ -933,10 +933,24 @@ private struct DateInfoBlock: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// Counted in CALENDAR days. Dividing the seconds left by 86,400 and
+    /// truncating printed "Today" for anything under 24 hours away — so at
+    /// 10 a.m. tomorrow's ex-date already read "Today" — and clamped a date
+    /// that had passed to "Today" as well.
     private func daysAwayText(_ date: Date) -> String {
-        let days = max(Int(date.timeIntervalSinceNow / 86400), 0)
-        if days == 0 { return "Today" }
-        return "in \(days) day\(days == 1 ? "" : "s")"
+        let calendar = Calendar.current
+        let days = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: Date()),
+            to: calendar.startOfDay(for: date)
+        ).day ?? 0
+        switch days {
+        case 0: return "Today"
+        case 1: return "Tomorrow"
+        case -1: return "Yesterday"
+        case ..<0: return "\(-days) days ago"
+        default: return "in \(days) days"
+        }
     }
 }
 

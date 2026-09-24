@@ -1617,12 +1617,13 @@ object YahooQuoteClient {
     private var calendarCacheLoaded = false
 
     /**
-     * Twelve hours. A fund declares a distribution a few times a year and the
-     * dates don't move once published, so a shorter window only finds a newly
-     * declared payment a little sooner — at the cost of re-scraping up to four
-     * URLs per ticker every time the app opens.
+     * Ten minutes, matching iOS. It was twelve hours, on the reasoning that a
+     * fund declares a few times a year and published dates don't move — but
+     * it meant a distribution declared this morning did not appear until
+     * tomorrow, which is exactly when someone opens the tab to look for it.
+     * The disk copy still covers a failed scrape or no network.
      */
-    private const val CALENDAR_TTL_MS = 12L * 60 * 60 * 1000
+    private const val CALENDAR_TTL_MS = 10L * 60 * 1000
 
     private fun loadCalendarCacheIfNeeded() {
         if (calendarCacheLoaded) return
@@ -1650,6 +1651,7 @@ object YahooQuoteClient {
      * the network.
      */
     fun invalidateDividendCalendar(ticker: String? = null) {
+        DeclaredDividends.invalidate(ticker)
         if (ticker == null) {
             for (key in calendarCache.keys.toList()) {
                 calendarCache[key]?.let { entry -> calendarCache[key] = CachedCalendar(entry.rows, 0L) }
@@ -1816,20 +1818,57 @@ object YahooQuoteClient {
      *
      * Returns null when the list is empty or has no confirmed entries.
      */
-    fun inferUpcomingFromHistoryOrg(entries: List<DividendHistoryOrgEntry>): UpcomingDividend? {
+    fun inferUpcomingFromHistoryOrg(
+        entries: List<DividendHistoryOrgEntry>,
+        now: Long = System.currentTimeMillis()
+    ): UpcomingDividend? {
         if (entries.isEmpty()) return null
-        val now = System.currentTimeMillis()
+        val startOfToday = java.util.Calendar.getInstance().apply {
+            timeInMillis = now
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
 
-        // A row dated in the future is a projection whether or not the site
-        // labelled it — never let one contaminate the confirmed history.
+        // Estimated rows never count as history, whatever their date.
         val confirmed = entries
             .filter { !it.isEstimated && it.exDateMs <= now }
             .sortedByDescending { it.exDateMs }
-        val future = entries
-            .filter { it.exDateMs > now }
-            .sortedBy { it.exDateMs }
 
-        val upcoming = future.firstOrNull()
+        // Typical gap between a payment's ex-date and the cash actually
+        // landing, measured from this security's own record rather than
+        // assumed — it runs from a couple of days (European annual payers) to
+        // five or six weeks (Canadian ETFs). Only rows that carry both dates
+        // can contribute; when none do, the median of nothing is no answer and
+        // the projected pay date is simply left unknown.
+        val exToPayGaps = confirmed
+            .mapNotNull { row -> row.payDateMs?.let { it - row.exDateMs } }
+            .filter { it in 0..(90L * DAY_MS) }
+            .sorted()
+        val exToPayGap = exToPayGaps.getOrNull(exToPayGaps.size / 2)
+
+        // A payment is upcoming until its money ARRIVES, not until it goes ex.
+        //
+        // This used to split on `exDateMs > now`, with ex-dates parsed at
+        // local midnight. On the ex-date itself midnight is already behind
+        // `now`, so a declared distribution dropped out of "upcoming" at 00:00
+        // on the day it went ex — days before the cash landed — and the card
+        // fell back to a "same quarter last year" guess with no pay date, for
+        // a payment the fund had already announced.
+        //
+        // A row with no published pay date (Yahoo's events block) stays owed
+        // for the fund's own measured ex→pay gap, or a week when there is
+        // nothing to measure it from.
+        val undatedGrace = exToPayGap ?: (7L * DAY_MS)
+        val owed = entries
+            .filter { (it.payDateMs ?: (it.exDateMs + undatedGrace)) >= startOfToday }
+            .sortedBy { it.exDateMs }
+        // The earliest payment still owed — preferring the declared row when
+        // the source also listed a projection for the same slot.
+        val upcoming = owed.firstOrNull()?.let { first ->
+            owed.firstOrNull { !it.isEstimated && it.exDateMs - first.exDateMs <= 45L * DAY_MS } ?: first
+        }
 
         if (confirmed.isEmpty()) {
             return upcoming?.let {
@@ -1880,20 +1919,26 @@ object YahooQuoteClient {
             )
         }
 
-        val nextExDate = upcoming?.exDateMs
-            ?: (confirmed.first().exDateMs + (365.0 / freq * DAY_MS).toLong())
-
-        // Typical gap between a payment's ex-date and the cash actually
-        // landing, measured from this security's own record rather than
-        // assumed — it runs from a couple of days (European annual payers) to
-        // five or six weeks (Canadian ETFs). Only rows that carry both dates
-        // can contribute; when none do, the median of nothing is no answer and
-        // the projected pay date is simply left unknown.
-        val exToPayGaps = confirmed
-            .mapNotNull { row -> row.payDateMs?.let { it - row.exDateMs } }
-            .filter { it in 0..(90L * DAY_MS) }
-            .sorted()
-        val exToPayGap = exToPayGaps.getOrNull(exToPayGaps.size / 2)
+        // One cycle on from the last payment, stepped in whole calendar months
+        // so the date stays on the fund's usual day instead of drifting ~5 days
+        // a year. A projection that has slipped a little into the past is
+        // kept — the record usually lags the payment by a few days, and
+        // jumping ahead would skip a payment that is still coming — but one
+        // well behind us is rolled forward a cycle at a time.
+        val nextExDate = upcoming?.exDateMs ?: run {
+            val stepMonths = maxOf(12 / freq, 1)
+            val graceMs = minOf(20L, 365L / freq / 2) * DAY_MS
+            val cal = java.util.Calendar.getInstance().apply {
+                timeInMillis = confirmed.first().exDateMs
+                add(java.util.Calendar.MONTH, stepMonths)
+            }
+            var rolls = 0
+            while (cal.timeInMillis + graceMs < startOfToday && rolls < 60) {
+                cal.add(java.util.Calendar.MONTH, stepMonths)
+                rolls++
+            }
+            cal.timeInMillis
+        }
         val nextPayDate = upcoming?.payDateMs ?: exToPayGap?.let { nextExDate + it }
 
         var perPayment: Double? = null

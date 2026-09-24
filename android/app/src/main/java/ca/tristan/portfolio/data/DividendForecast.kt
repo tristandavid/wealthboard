@@ -313,6 +313,18 @@ object DividendForecast {
      * forecast for that payment rather than being added alongside it, which
      * would double-count the nearest quarter.
      */
+    /**
+     * Replaces the nearest projected payment with the next one the rest of
+     * the app is showing.
+     *
+     * Always when the fund has DECLARED it — and now also when it has not. The
+     * Upcoming card derives its figure one way (same slot last year, scaled by
+     * the year-over-year change) and the template here another (same slot,
+     * scaled by the multi-year measured rate), so the card, the holding's
+     * payout schedule and the income chart printed three different amounts
+     * for one XEQT payment. The card's figure is the one read first, so the
+     * forecast adopts it for that payment.
+     */
     private fun applyAnnouncedPayment(
         projected: List<ProjectedPayment>,
         upcoming: UpcomingDividend?,
@@ -320,9 +332,18 @@ object DividendForecast {
         untilMillis: Long
     ): List<ProjectedPayment> {
         val amount = upcoming?.perPaymentAmount?.takeIf { it > 0.0 } ?: return projected
-        if (!upcoming.isAnnounced) return projected
         val at = upcoming.payDateMillis ?: upcoming.exDividendDateMillis ?: return projected
-        if (at <= fromMillis || at > untilMillis) return projected
+        // Same-day counts: a declared payment with no published pay date is
+        // dated by its ex-date, which is midnight — already behind `from` on
+        // the ex-date itself.
+        val startOfFromDay = java.util.Calendar.getInstance().apply {
+            timeInMillis = fromMillis
+            set(java.util.Calendar.HOUR_OF_DAY, 0)
+            set(java.util.Calendar.MINUTE, 0)
+            set(java.util.Calendar.SECOND, 0)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }.timeInMillis
+        if (at < startOfFromDay || at > untilMillis) return projected
 
         val windowMs = 60L * DAY_MS
         val nearest = projected.minByOrNull { kotlin.math.abs(it.atMillis - at) }
@@ -330,7 +351,7 @@ object DividendForecast {
         if (nearest != null && kotlin.math.abs(nearest.atMillis - at) <= windowMs) {
             replaced.remove(nearest)
         }
-        replaced += ProjectedPayment(at, amount, isAnnounced = true)
+        replaced += ProjectedPayment(at, amount, isAnnounced = upcoming.isAnnounced)
         return replaced
     }
 }

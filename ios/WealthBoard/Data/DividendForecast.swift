@@ -293,23 +293,33 @@ enum DividendForecast {
         return out
     }
 
-    /// Replaces the first projected payment with the declared one when the fund
-    /// has actually announced it.
+    /// Replaces the nearest projected payment with the next one the rest of
+    /// the app is showing.
     ///
-    /// Matched by date within half a cycle so the announcement supersedes the
-    /// forecast for that payment rather than being added alongside it, which
-    /// would double-count the nearest quarter.
+    /// Always when the fund has DECLARED it — and now also when it has not.
+    /// The Upcoming card derives its figure one way (same slot last year,
+    /// scaled by the year-over-year change) and the template here another
+    /// (same slot, scaled by the multi-year measured rate), so the card, the
+    /// holding's payout schedule and the income chart printed three different
+    /// amounts for one XEQT payment. The card's figure is the one the user
+    /// reads first, so the forecast now adopts it for that payment.
+    ///
+    /// Matched by date within 60 days so it supersedes the forecast for that
+    /// payment rather than being added alongside it, which would double-count
+    /// the nearest quarter.
     private static func applyAnnouncedPayment(
         _ projected: [ProjectedPayment],
         upcoming: UpcomingDividend?,
         from: Date,
         until: Date
     ) -> [ProjectedPayment] {
+        // Same-day counts: a declared payment with no published pay date is
+        // dated by its ex-date, which is midnight, and on the ex-date itself
+        // midnight is already behind `from`.
         guard let upcoming,
               let amount = upcoming.perPaymentAmount, amount > 0,
-              upcoming.isAnnounced,
               let at = upcoming.payDate ?? upcoming.exDividendDate,
-              at > from, at <= until else { return projected }
+              at >= calendar.startOfDay(for: from), at <= until else { return projected }
 
         let window: TimeInterval = 60 * day
         var replaced = projected
@@ -318,7 +328,7 @@ enum DividendForecast {
         }), abs(replaced[nearestIndex].date.timeIntervalSince(at)) <= window {
             replaced.remove(at: nearestIndex)
         }
-        replaced.append(ProjectedPayment(date: at, perUnit: amount, isAnnounced: true))
+        replaced.append(ProjectedPayment(date: at, perUnit: amount, isAnnounced: upcoming.isAnnounced))
         return replaced
     }
 }

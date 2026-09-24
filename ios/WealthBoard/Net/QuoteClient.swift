@@ -540,10 +540,50 @@ actor QuoteClient {
     /// Coverage is NYSE, NASDAQ, TSX, TSX-V and NEO, which is the whole of
     /// what this app prices in practice.
     func fetchHistoricalDividends(ticker: String) async -> [(Date, Double)] {
-        let calendar = await fetchDividendCalendar(ticker: ticker)
-            .filter { !$0.isEstimated && $0.amountPerShare > 0 }
+        await fetchDividendRecord(ticker: ticker).history
+    }
+
+    /// The next distribution AND the paid record, from one set of fetches.
+    ///
+    /// The Dividends tab, the holding screen and the alert engine all need
+    /// both halves. They used to come from two separate calls that each
+    /// re-read the payout page and the events block, and only the "upcoming"
+    /// half could ever see a declared distribution.
+    ///
+    /// Three sources, merged rather than picked between:
+    ///  - the payout calendar (ex AND pay dates, declared rows once posted),
+    ///  - the chart endpoint's events block (ex-dates only, full history),
+    ///  - the exchange's own declared-dividend feed (TMX for Canadian
+    ///    listings, Nasdaq for US ones). This is what finds an announcement
+    ///    when the payout page is down or slow to post it — the case where
+    ///    XEQT's September distribution sat on screen as "same quarter last
+    ///    year, growth-adjusted" with no pay date on the day it went ex.
+    func fetchDividendRecord(ticker: String) async -> (upcoming: UpcomingDividend?, history: [(Date, Double)]) {
+        let declared = await fetchDeclaredDividends(ticker: ticker)
+        let scraped = await fetchDividendCalendar(ticker: ticker)
         let events = await fetchDividendEvents(ticker: ticker)
-        return Self.payDatedHistory(events: events, calendar: calendar)
+
+        // History: money that has actually arrived. A declared row whose pay
+        // date is still ahead is the NEXT payment, not a received one — it
+        // used to be counted here too, inflating the trailing twelve months
+        // and the year's "actual" bar with cash nobody had been paid yet.
+        let now = Date()
+        let paidCalendar = Self.mergeDeclared(scraped, declared: declared)
+            .filter { !$0.isEstimated && $0.amountPerShare > 0 }
+        let history = Self.payDatedHistory(events: events, calendar: paidCalendar)
+            .filter { $0.0 <= now }
+
+        // Upcoming: the payout calendar where there is one, otherwise the
+        // events block read as calendar rows — with the declared feed laid
+        // over either, so an announcement is never lost for want of a payout
+        // page.
+        let base: [DividendCalendarEntry] = scraped.isEmpty
+            ? events.map {
+                DividendCalendarEntry(exDate: $0.0, payDate: nil, amountPerShare: $0.1, isEstimated: false)
+            }
+            : scraped
+        let upcoming = inferUpcoming(from: Self.mergeDeclared(base, declared: declared))
+        return (upcoming, history)
     }
 
     /// The distribution record every income figure is bucketed on, in PAY dates.
@@ -762,6 +802,7 @@ actor QuoteClient {
     /// forced refresh always hits the network.
     func invalidateDividendCalendar(ticker: String? = nil) {
         guard let ticker else {
+            declaredCache.removeAll()
             for key in calendarCache.keys {
                 if let entry = calendarCache[key] {
                     calendarCache[key] = CachedCalendar(entries: entry.entries, at: .distantPast)
@@ -770,8 +811,246 @@ actor QuoteClient {
             return
         }
         let key = ticker.trimmingCharacters(in: .whitespaces).uppercased()
+        declaredCache[key] = nil
         guard let entry = calendarCache[key] else { return }
         calendarCache[key] = CachedCalendar(entries: entry.entries, at: .distantPast)
+    }
+
+    // MARK: Declared dividends (exchange feeds)
+    //
+    // The payout calendar is a scraped third-party page. When it is down,
+    // blocked, or has not caught up with an announcement yet, the only other
+    // record — the chart endpoint's events block — cannot help: it lists a
+    // distribution once it has gone ex, never before, and never with a pay
+    // date. So an announced payment was invisible exactly when it mattered.
+    //
+    // These ask the listing exchange's own public quote feed for the most
+    // recently declared distribution: TMX Money for TSX / TSX-V / NEO, Nasdaq
+    // for US listings. Both are best-effort: any failure returns nothing and
+    // the calendar + events path carries on exactly as before.
+
+    private struct CachedDeclared {
+        let entries: [DividendCalendarEntry]
+        let at: Date
+    }
+
+    private var declaredCache: [String: CachedDeclared] = [:]
+
+    /// Same window as the calendar: short enough that a distribution declared
+    /// this morning shows up when the tab is next opened.
+    private static let declaredTTL: TimeInterval = 10 * 60
+
+    func fetchDeclaredDividends(ticker: String) async -> [DividendCalendarEntry] {
+        let key = ticker.trimmingCharacters(in: .whitespaces).uppercased()
+        guard !key.isEmpty else { return [] }
+        if let hit = declaredCache[key], Date().timeIntervalSince(hit.at) < Self.declaredTTL {
+            return hit.entries
+        }
+
+        let fetched: [DividendCalendarEntry]
+        if let tmxSymbol = Self.tmxSymbol(for: key) {
+            fetched = await fetchTMXDeclared(symbol: tmxSymbol)
+        } else if let nasdaqSymbol = Self.nasdaqSymbol(for: key) {
+            fetched = await fetchNasdaqDeclared(symbol: nasdaqSymbol)
+        } else {
+            fetched = []
+        }
+        // An empty answer is cached too — a symbol neither exchange lists
+        // should not cost a request on every screen that asks.
+        declaredCache[key] = CachedDeclared(entries: fetched, at: Date())
+        return fetched
+    }
+
+    /// TMX's spelling of a Canadian listing, or nil for anything else.
+    /// "XEQT.TO" → "XEQT", "RCI-B.TO" → "RCI.B".
+    nonisolated static func tmxSymbol(for ticker: String) -> String? {
+        let upper = ticker.uppercased()
+        for suffix in [".TO", ".TSX", ".V", ".NE", ".CN"] where upper.hasSuffix(suffix) {
+            let base = String(upper.dropLast(suffix.count))
+            guard !base.isEmpty else { return nil }
+            return base.replacingOccurrences(of: "-", with: ".")
+        }
+        return nil
+    }
+
+    /// A plain US symbol Nasdaq's quote API will answer for, or nil. Anything
+    /// with an exchange suffix, a class separator, or index/currency syntax is
+    /// skipped rather than guessed at.
+    nonisolated static func nasdaqSymbol(for ticker: String) -> String? {
+        let upper = ticker.uppercased()
+        guard (1...5).contains(upper.count),
+              upper.allSatisfy({ $0.isASCII && $0.isLetter }) else { return nil }
+        return upper
+    }
+
+    /// Calendar dates ("2026-09-24", optionally with a time after it) read at
+    /// the reader's LOCAL midnight — the same rule the payout-page parser
+    /// uses, so the two sources agree on which day a payment falls.
+    nonisolated static func parseCalendarDay(_ raw: String?, format: String = "yyyy-MM-dd") -> Date? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else { return nil }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = format
+        let length = format.count
+        return formatter.date(from: String(raw.prefix(length)))
+    }
+
+    private func fetchTMXDeclared(symbol: String) async -> [DividendCalendarEntry] {
+        guard let url = URL(string: "https://app-money.tmx.com/graphql") else { return [] }
+        let query = """
+        query getQuoteBySymbol($symbol: String, $locale: String) {
+          getQuoteBySymbol(symbol: $symbol, locale: $locale) {
+            symbol exDividendDate dividendPayDate dividendAmount dividendFrequency
+          }
+        }
+        """
+        let payload: [String: Any] = [
+            "operationName": "getQuoteBySymbol",
+            "variables": ["symbol": symbol, "locale": "en"],
+            "query": query
+        ]
+        guard let body = try? JSONSerialization.data(withJSONObject: payload) else { return [] }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = body
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("https://money.tmx.com", forHTTPHeaderField: "Origin")
+        request.setValue("https://money.tmx.com/en/quote/\(symbol)", forHTTPHeaderField: "Referer")
+        request.setValue("en", forHTTPHeaderField: "locale")
+
+        guard let (data, response) = try? await payoutSession.data(for: request),
+              let status = (response as? HTTPURLResponse)?.statusCode,
+              (200..<300).contains(status),
+              let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return Self.parseTMXDeclared(root)
+    }
+
+    /// Reads `data.getQuoteBySymbol` — the most recently declared
+    /// distribution's ex-date, pay date and per-payment amount.
+    nonisolated static func parseTMXDeclared(_ root: [String: Any]) -> [DividendCalendarEntry] {
+        guard let data = root["data"] as? [String: Any],
+              let quote = data["getQuoteBySymbol"] as? [String: Any],
+              let exDate = parseCalendarDay(quote["exDividendDate"] as? String) else { return [] }
+        let amount: Double? = {
+            if let n = quote["dividendAmount"] as? NSNumber { return n.doubleValue }
+            if let s = quote["dividendAmount"] as? String { return Double(s.replacingOccurrences(of: "$", with: "")) }
+            return nil
+        }()
+        guard let amount, amount > 0, amount.isFinite else { return [] }
+        return [DividendCalendarEntry(
+            exDate: exDate,
+            payDate: parseCalendarDay(quote["dividendPayDate"] as? String),
+            amountPerShare: amount,
+            isEstimated: false
+        )]
+    }
+
+    private func fetchNasdaqDeclared(symbol: String) async -> [DividendCalendarEntry] {
+        // The asset class is part of the path and there is no telling an ETF
+        // from a stock by its symbol, so ask as a stock and then as an ETF.
+        for assetClass in ["stocks", "etf"] {
+            guard let url = URL(
+                string: "https://api.nasdaq.com/api/quote/\(symbol)/dividends?assetclass=\(assetClass)"
+            ) else { continue }
+            var request = URLRequest(url: url)
+            request.setValue(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    + "Chrome/124.0.0.0 Safari/537.36",
+                forHTTPHeaderField: "User-Agent"
+            )
+            request.setValue("application/json, text/plain, */*", forHTTPHeaderField: "Accept")
+            request.setValue("https://www.nasdaq.com", forHTTPHeaderField: "Origin")
+            request.setValue("https://www.nasdaq.com/", forHTTPHeaderField: "Referer")
+            guard let (data, response) = try? await payoutSession.data(for: request),
+                  let status = (response as? HTTPURLResponse)?.statusCode,
+                  (200..<300).contains(status),
+                  let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { continue }
+            let rows = Self.parseNasdaqDeclared(root)
+            if !rows.isEmpty { return rows }
+        }
+        return []
+    }
+
+    /// Reads `data.dividends.rows` — every cash distribution with its ex,
+    /// declaration and payment dates, newest first. Only the recent slice is
+    /// kept: this feed is here for announcements, and the long record already
+    /// comes from the events block.
+    nonisolated static func parseNasdaqDeclared(_ root: [String: Any]) -> [DividendCalendarEntry] {
+        guard let data = root["data"] as? [String: Any],
+              let dividends = data["dividends"] as? [String: Any],
+              let rows = dividends["rows"] as? [[String: Any]] else { return [] }
+        let cutoff = Date().addingTimeInterval(-450 * 24 * 60 * 60)
+        return rows.compactMap { row -> DividendCalendarEntry? in
+            if let type = row["type"] as? String, !type.isEmpty,
+               type.caseInsensitiveCompare("Cash") != .orderedSame { return nil }
+            guard let exDate = parseCalendarDay(row["exOrEffDate"] as? String, format: "MM/dd/yyyy"),
+                  exDate >= cutoff,
+                  let rawAmount = row["amount"] as? String,
+                  let amount = Double(
+                    rawAmount.replacingOccurrences(of: "$", with: "")
+                        .replacingOccurrences(of: ",", with: "")
+                        .trimmingCharacters(in: .whitespaces)
+                  ), amount > 0 else { return nil }
+            return DividendCalendarEntry(
+                exDate: exDate,
+                payDate: parseCalendarDay(row["paymentDate"] as? String, format: "MM/dd/yyyy"),
+                amountPerShare: amount,
+                isEstimated: false
+            )
+        }
+    }
+
+    /// Lays declared rows over a record: a declared row replaces whatever the
+    /// record had for the same distribution (an "unconfirmed" projection, or
+    /// an ex-date-only event), and is added when the record has nothing for it.
+    ///
+    /// A declared amount wildly out of line with the fund's own payments is
+    /// kept for its DATES only, as an estimated row, rather than trusted —
+    /// the feeds are undocumented, and one reporting an annual figure where a
+    /// per-payment one belongs must not triple the card.
+    nonisolated static func mergeDeclared(
+        _ record: [DividendCalendarEntry],
+        declared: [DividendCalendarEntry]
+    ) -> [DividendCalendarEntry] {
+        guard !declared.isEmpty else { return record }
+        let day: TimeInterval = 24 * 60 * 60
+        let tolerance = 5 * day
+
+        let recentCutoff = Date().addingTimeInterval(-2 * 365 * day)
+        let largestRecent = record
+            .filter { !$0.isEstimated && $0.exDate >= recentCutoff }
+            .map(\.amountPerShare)
+            .max()
+
+        var merged = record
+        for row in declared {
+            var incoming = row
+            if let largestRecent, largestRecent > 0, row.amountPerShare > largestRecent * 3 {
+                incoming = DividendCalendarEntry(
+                    exDate: row.exDate,
+                    payDate: row.payDate,
+                    amountPerShare: row.amountPerShare,
+                    isEstimated: true
+                )
+            }
+            if let index = merged.firstIndex(where: { abs($0.exDate.timeIntervalSince(row.exDate)) <= tolerance }) {
+                let existing = merged[index]
+                // A confirmed row already on file wins over a doubted one.
+                if incoming.isEstimated && !existing.isEstimated { continue }
+                merged[index] = DividendCalendarEntry(
+                    exDate: incoming.exDate,
+                    payDate: incoming.payDate ?? existing.payDate,
+                    amountPerShare: incoming.amountPerShare,
+                    isEstimated: incoming.isEstimated
+                )
+            } else {
+                merged.append(incoming)
+            }
+        }
+        return merged.sorted { $0.exDate > $1.exDate }
     }
 
     /// The actual scrape, unconditioned by any cache.
@@ -951,17 +1230,48 @@ actor QuoteClient {
     /// and the same amount. In order of preference: a payment the fund has
     /// actually declared, the same slot last year adjusted for the fund's own
     /// growth, the median of recent payments, and finally the last payment.
-    func inferUpcoming(from entries: [DividendCalendarEntry]) -> UpcomingDividend? {
+    func inferUpcoming(from entries: [DividendCalendarEntry], now: Date = Date()) -> UpcomingDividend? {
         guard !entries.isEmpty else { return nil }
-        let now = Date()
+        let day: TimeInterval = 24 * 60 * 60
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let startOfToday = calendar.startOfDay(for: now)
 
-        // A row dated in the future is a projection whether or not the site
-        // labelled it — never let one contaminate the confirmed history.
+        // Estimated rows never count as history, whatever their date.
         let confirmed = entries.filter { !$0.isEstimated && $0.exDate <= now }
             .sorted { $0.exDate > $1.exDate }
-        let upcoming = entries.filter { $0.exDate > now }
+
+        // The ex-to-pay gap is MEASURED from this security's own record rather
+        // than assumed. Where no row carries both dates, the median of nothing
+        // is no answer and the pay date is left unknown — which is honest,
+        // where "ex-date + 5 days" was simply wrong for most funds.
+        let exToPayGaps = confirmed
+            .compactMap { row in row.payDate.map { $0.timeIntervalSince(row.exDate) } }
+            .filter { $0 >= 0 && $0 <= 90 * day }
+            .sorted()
+        let exToPay = exToPayGaps.isEmpty ? nil : exToPayGaps[exToPayGaps.count / 2]
+
+        // A payment is upcoming until its money ARRIVES, not until it goes ex.
+        //
+        // This used to split on `exDate > now`, with ex-dates read at local
+        // midnight. On the ex-date itself midnight is already behind `now`, so
+        // a declared distribution dropped out of "upcoming" at 00:00 on the day
+        // it went ex — days before the cash landed — and the card fell back to
+        // a "same quarter last year" guess with no pay date, for a payment the
+        // fund had already announced.
+        //
+        // A row with no published pay date (the events block) stays owed for
+        // the fund's own measured ex→pay gap, or a week when there is nothing
+        // to measure it from.
+        let undatedGrace = exToPay ?? 7 * day
+        let owed = entries
+            .filter { ($0.payDate ?? $0.exDate.addingTimeInterval(undatedGrace)) >= startOfToday }
             .sorted { $0.exDate < $1.exDate }
-            .first
+        // The earliest payment still owed — preferring the declared row when
+        // the source also listed a projection for the same slot.
+        let upcoming: DividendCalendarEntry? = owed.first.map { first in
+            owed.first { !$0.isEstimated && $0.exDate.timeIntervalSince(first.exDate) <= 45 * day } ?? first
+        }
 
         guard !confirmed.isEmpty else {
             guard let upcoming else { return nil }
@@ -976,8 +1286,6 @@ actor QuoteClient {
                 basisLabel: upcoming.isEstimated ? "projected by source" : "declared by fund"
             )
         }
-
-        let day: TimeInterval = 24 * 60 * 60
 
         // Frequency from the median gap between confirmed ex-dates, rather than
         // from a field no free source fills in reliably.
@@ -1021,18 +1329,28 @@ actor QuoteClient {
             )
         }
 
-        let nextExDate = upcoming?.exDate
-            ?? confirmed[0].exDate.addingTimeInterval(365 / Double(frequency) * day)
-
-        // The ex-to-pay gap is MEASURED from this security's own record rather
-        // than assumed. Where no row carries both dates, the median of nothing
-        // is no answer and the pay date is left unknown — which is honest,
-        // where "ex-date + 5 days" was simply wrong for most funds.
-        let exToPayGaps = confirmed
-            .compactMap { row in row.payDate.map { $0.timeIntervalSince(row.exDate) } }
-            .filter { $0 >= 0 && $0 <= 90 * day }
-            .sorted()
-        let exToPay = exToPayGaps.isEmpty ? nil : exToPayGaps[exToPayGaps.count / 2]
+        // One cycle on from the last payment, stepped in whole calendar months
+        // so the date stays on the fund's usual day instead of drifting ~5 days
+        // a year. A projection that has slipped a little into the past is
+        // kept — the record usually lags the payment by a few days, and
+        // jumping ahead would skip a payment that is still coming — but one
+        // well behind us is rolled forward a cycle at a time.
+        let nextExDate: Date
+        if let upcoming {
+            nextExDate = upcoming.exDate
+        } else {
+            let stepMonths = max(12 / frequency, 1)
+            let grace = min(20.0, 365.0 / Double(frequency) / 2) * day
+            var projected = calendar.date(byAdding: .month, value: stepMonths, to: confirmed[0].exDate)
+                ?? confirmed[0].exDate.addingTimeInterval(365 / Double(frequency) * day)
+            var rolls = 0
+            while projected.addingTimeInterval(grace) < startOfToday, rolls < 60,
+                  let next = calendar.date(byAdding: .month, value: stepMonths, to: projected) {
+                projected = next
+                rolls += 1
+            }
+            nextExDate = projected
+        }
         let nextPayDate = upcoming?.payDate ?? exToPay.map { nextExDate.addingTimeInterval($0) }
 
         var perPayment: Double?
@@ -1091,31 +1409,9 @@ actor QuoteClient {
         )
     }
 
-    /// The next expected distribution for `ticker`.
-    ///
-    /// The payout calendar first, because it carries real pay dates and
-    /// declared payments; Yahoo's own distribution events as the fallback for
-    /// listings the calendar does not cover.
+    /// The next expected distribution for `ticker`. See `fetchDividendRecord`.
     func fetchUpcomingDividend(ticker: String) async -> UpcomingDividend? {
-        let calendar = await fetchDividendCalendar(ticker: ticker)
-        if let fromCalendar = inferUpcoming(from: calendar) { return fromCalendar }
-
-        // Straight to the events fallback, NOT back through
-        // `fetchHistoricalDividends` — that now reads the same calendar first,
-        // and calling it here would re-fetch up to four payout URLs that have
-        // already just come back empty.
-        let history = await fetchDividendEvents(ticker: ticker)
-        guard !history.isEmpty else { return nil }
-        return inferUpcoming(
-            from: history.map {
-                DividendCalendarEntry(
-                    exDate: $0.0,
-                    payDate: nil,
-                    amountPerShare: $0.1,
-                    isEstimated: false
-                )
-            }
-        )
+        await fetchDividendRecord(ticker: ticker).upcoming
     }
 
     // MARK: - Search

@@ -25,6 +25,9 @@ struct PayoutRow: Identifiable, Hashable {
     let amountPerUnit: Double
     let totalForPosition: Double
     let isUpcoming: Bool
+    /// True when an upcoming row is the amount the fund actually declared,
+    /// rather than a forecast.
+    var isAnnounced: Bool = false
 
     var id: String { "\(date.timeIntervalSince1970)-\(isUpcoming)" }
 }
