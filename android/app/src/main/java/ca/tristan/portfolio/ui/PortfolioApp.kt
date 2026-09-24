@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import ca.tristan.portfolio.security.AppLock
@@ -168,47 +169,26 @@ fun PortfolioApp(viewModel: PortfolioViewModel, activity: FragmentActivity) {
         updateStatus = ca.tristan.portfolio.update.UpdateGate.check(context)
     }
 
-    // ── Alerts, on open ───────────────────────────────────────────────────
+    // ── Alerts, while the app is open ─────────────────────────────────────
     //
-    // Evaluated here as well as in SyncWorker, to match iOS and because the
-    // worker alone made the feature look broken: it runs on a 30-45 minute
-    // flex window AND skips entirely whenever markets are shut, so an alert
-    // set on a Sunday evening produced nothing at all until Monday's open and
-    // read as "alerts don't work".
+    // Evaluated here as well as in SyncWorker. The worker runs every 15
+    // minutes at best, and Android may defer it further; this pass runs on
+    // every return to the app and then every two minutes for as long as it
+    // stays in front, so a target crossed while the user is looking at the
+    // portfolio is announced then — not whenever the worker next wakes, and
+    // not only after pressing the debug "Check alerts now" row. It used to
+    // run exactly once, at launch.
     //
-    // Premium and notification permission are both checked inside the engine
-    // path, so this is a no-op for anyone who has neither.
-    LaunchedEffect(Unit) {
+    // Premium, notification permission and market hours are all checked
+    // inside AlertPass, so a tick is a no-op for anyone with nothing to check.
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    LaunchedEffect(lifecycleOwner) {
         ca.tristan.portfolio.billing.Subscriptions
             .loadDebugOverride(BuildConfig.DEBUG, context)
-        if (ca.tristan.portfolio.billing.Subscriptions.cachedIsPremium(context)) {
-            runCatching {
-                val db = ca.tristan.portfolio.data.db.AppDatabase.get(context)
-                val repo = ca.tristan.portfolio.data.PortfolioRepository(
-                    db.accountDao(), db.holdingDao(), db.priceSnapshotDao(),
-                    db.dividendDao(), db.watchlistDao(), db.transactionDao(), db.alertDao()
-                )
-                val dao = db.alertDao()
-                val enabled = dao.enabled()
-                if (enabled.isNotEmpty()) {
-                    // Gated exactly as the worker is. This pass runs on every
-                    // launch, so leaving it ungated meant the one path the
-                    // user triggers most often was also the one making the
-                    // most pointless requests — re-reading prices that cannot
-                    // have moved, every time the app was opened at night.
-                    val kinds = ca.tristan.portfolio.alerts.AlertGate
-                        .kindsFor(context, enabled.map { it.ticker })
-                    if (kinds.isNotEmpty()) {
-                        val firings = ca.tristan.portfolio.alerts.AlertEngine
-                            .evaluate(dao, repo, kinds = kinds)
-                        if (ca.tristan.portfolio.data.db.AlertKind.EX_DIVIDEND_WITHIN_DAYS in kinds) {
-                            ca.tristan.portfolio.alerts.AlertGate.markExDividendChecked(context)
-                        }
-                        for (firing in firings) {
-                            ca.tristan.portfolio.alerts.AlertNotifier.post(context, firing)
-                        }
-                    }
-                }
+        lifecycleOwner.lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) {
+            while (true) {
+                ca.tristan.portfolio.alerts.AlertPass.run(context)
+                kotlinx.coroutines.delay(2 * 60 * 1000L)
             }
         }
     }

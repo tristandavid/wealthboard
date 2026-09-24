@@ -36,7 +36,9 @@ enum AlertEngine {
     }
 
     /// Evaluates every enabled alert and returns the ones that just became
-    /// true, along with ONLY the alerts whose latch state actually changed.
+    /// true, along with ONLY the alerts whose latch state actually changed,
+    /// and the next distribution seen for each ex-dividend rule's ticker (so
+    /// the caller can hand reminders to iOS without fetching them again).
     ///
     /// Returning the changed rows rather than the whole list matters: this
     /// function awaits network calls for several seconds, and the user may
@@ -59,7 +61,7 @@ enum AlertEngine {
         repository: PortfolioRepository,
         now: Date = Date(),
         kinds: Set<AlertKind> = AlertEngine.allKinds
-    ) async -> (firings: [AlertFiring], changed: [PriceAlert]) {
+    ) async -> (firings: [AlertFiring], changed: [PriceAlert], exDividends: [String: UpcomingDividend]) {
 
         var updated = alerts
         var changedIds = Set<UUID>()
@@ -68,7 +70,7 @@ enum AlertEngine {
         let enabled = alerts.enumerated().filter {
             $0.element.enabled && kinds.contains($0.element.kind)
         }
-        guard !enabled.isEmpty else { return ([], []) }
+        guard !enabled.isEmpty else { return ([], [], [:]) }
 
         // ── Price-driven rules ────────────────────────────────────────────
         //
@@ -102,21 +104,21 @@ enum AlertEngine {
         // bounded by how many calendar alerts the user set rather than by the
         // size of their portfolio.
         let exDivIndices = enabled.filter { $0.element.kind == .exDividendWithinDays }
+        var upcoming: [String: UpcomingDividend] = [:]
         if !exDivIndices.isEmpty {
-            var upcoming: [String: Date] = [:]
             for ticker in Set(exDivIndices.map { $0.element.ticker }) {
                 let (dividend, _) = await repository.upcomingDividend(ticker: ticker)
-                if let date = dividend?.exDividendDate { upcoming[ticker] = date }
+                if let dividend, dividend.exDividendDate != nil { upcoming[ticker] = dividend }
             }
             for (index, alert) in exDivIndices {
-                guard let exDate = upcoming[alert.ticker] else { continue }
-                let outcome = evaluateExDividend(alert, exDate: exDate, now: now)
+                guard let next = upcoming[alert.ticker], let exDate = next.exDividendDate else { continue }
+                let outcome = evaluateExDividend(alert, exDate: exDate, announced: next.isAnnounced, now: now)
                 apply(outcome, to: &updated[index], now: now,
                       firings: &firings, changed: &changedIds)
             }
         }
 
-        return (firings, updated.filter { changedIds.contains($0.id) })
+        return (firings, updated.filter { changedIds.contains($0.id) }, upcoming)
     }
 
     /// Prices for `tickers`, from the SAME source the portfolio is priced from.
@@ -208,26 +210,37 @@ enum AlertEngine {
     private static func evaluateExDividend(
         _ alert: PriceAlert,
         exDate: Date,
+        announced: Bool = true,
         now: Date
     ) -> Outcome {
-        let daysAway = exDate.timeIntervalSince(now) / 86_400
+        // Counted in CALENDAR days. The old fractional count — seconds left
+        // over 86,400 — went negative at 00:01 on the ex-date, because
+        // ex-dates are stored at local midnight, so the "goes ex-dividend
+        // today" notification could never actually be sent.
+        let calendar = Calendar.current
+        let daysAway = calendar.dateComponents(
+            [.day],
+            from: calendar.startOfDay(for: now),
+            to: calendar.startOfDay(for: exDate)
+        ).day ?? -1
         // Past dates are not "zero days away", they are gone: the window is
         // closed, and re-opening it would notify someone about a date they
         // already missed, on every pass, until the provider posts the next
         // one.
-        let withinWindow = daysAway >= 0 && daysAway <= alert.threshold
-        let rounded = Int(ceil(daysAway))
+        let withinWindow = daysAway >= 0 && Double(daysAway) <= alert.threshold
+        // A projected date is a forecast, and the notification says so.
+        let suffix = announced ? "" : " (expected — not yet announced by the fund)"
 
         let body: String
-        if rounded <= 0 {
-            body = "\(alert.ticker) goes ex-dividend today — buying after today misses this payment."
-        } else if rounded == 1 {
-            body = "\(alert.ticker) goes ex-dividend tomorrow."
+        if daysAway <= 0 {
+            body = "\(alert.ticker) goes ex-dividend today — units bought from today on don't receive this payment.\(suffix)"
+        } else if daysAway == 1 {
+            body = "\(alert.ticker) goes ex-dividend tomorrow — buy by today's close to receive this payment.\(suffix)"
         } else {
-            body = "\(alert.ticker) goes ex-dividend in \(rounded) days."
+            body = "\(alert.ticker) goes ex-dividend in \(daysAway) days.\(suffix)"
         }
 
-        return Outcome(isTrue: withinWindow, value: daysAway, body: body)
+        return Outcome(isTrue: withinWindow, value: Double(daysAway), body: body)
     }
 
     // MARK: - Latching

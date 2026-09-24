@@ -102,12 +102,18 @@ object AlertEngine {
         // size of their portfolio.
         val exDivAlerts = alerts.filter { it.kind == AlertKind.EX_DIVIDEND_WITHIN_DAYS }
         if (exDivAlerts.isNotEmpty()) {
+            // The SAME resolution the Dividends tab uses (payout calendar,
+            // the exchange's declared feed, Yahoo), not Yahoo's quoteSummary
+            // alone — which reports no announcements and, for many Canadian
+            // listings, only the LAST ex-date. The alert and the card could
+            // otherwise disagree about when a fund goes ex.
             val upcoming = exDivAlerts.map { it.ticker }.distinct().associateWith { ticker ->
-                runCatching { repository.upcomingDividendFor(ticker) }.getOrNull()
+                runCatching { repository.dividendRecordFor(ticker).first }.getOrNull()
             }
             for (alert in exDivAlerts) {
-                val exDate = upcoming[alert.ticker]?.exDividendDateMillis ?: continue
-                val outcome = evaluateExDividend(alert, exDate, nowMillis)
+                val next = upcoming[alert.ticker] ?: continue
+                val exDate = next.exDividendDateMillis ?: continue
+                val outcome = evaluateExDividend(alert, exDate, nowMillis, next.isAnnounced)
                 applyOutcome(dao, alert, outcome, nowMillis, firings)
             }
         }
@@ -146,13 +152,11 @@ object AlertEngine {
             when {
                 alert.kind == AlertKind.EX_DIVIDEND_WITHIN_DAYS -> {
                     val exDate = runCatching {
-                        repository.upcomingDividendFor(alert.ticker)?.exDividendDateMillis
+                        repository.dividendRecordFor(alert.ticker).first?.exDividendDateMillis
                     }.getOrNull()
                     if (exDate == null) "${alert.ticker}: no ex-dividend date published"
                     else {
-                        val days = kotlin.math.ceil(
-                            (exDate - nowMillis).toDouble() / MILLIS_PER_DAY
-                        ).toInt()
+                        val days = calendarDaysBetween(nowMillis, exDate)
                         "${alert.ticker}: ex-dividend in $days day(s), window " +
                             "${alert.threshold.toInt()}" +
                             if (latched) " — already fired" else ""
@@ -269,25 +273,40 @@ object AlertEngine {
     private fun evaluateExDividend(
         alert: AlertEntity,
         exDateMillis: Long,
-        nowMillis: Long
+        nowMillis: Long,
+        announced: Boolean = true
     ): Outcome {
-        val daysAway = (exDateMillis - nowMillis).toDouble() / MILLIS_PER_DAY
+        // Counted in CALENDAR days. The old fractional count — milliseconds
+        // left over 86.4 million — went negative at 00:01 on the ex-date,
+        // because ex-dates are stored at local midnight, so the "goes
+        // ex-dividend today" notification could never actually be sent.
+        val days = calendarDaysBetween(nowMillis, exDateMillis)
         // Past dates are not "zero days away", they are gone: the window is
         // closed and re-opening it would notify someone about a date they
         // already missed, every half hour, until the provider posts the next
         // one.
-        val withinWindow = daysAway >= 0 && daysAway <= alert.threshold
-        val rounded = kotlin.math.ceil(daysAway).toInt()
+        val withinWindow = days >= 0 && days <= alert.threshold
+        // A projected date is a forecast, and the notification says so.
+        val suffix = if (announced) "" else " (expected — not yet announced by the fund)"
         return Outcome(
             isTrue = withinWindow,
-            value = daysAway,
+            value = days.toDouble(),
             body = when {
-                rounded <= 0 -> "${alert.ticker} goes ex-dividend today — buying after " +
-                    "today misses this payment."
-                rounded == 1 -> "${alert.ticker} goes ex-dividend tomorrow."
-                else -> "${alert.ticker} goes ex-dividend in $rounded days."
+                days <= 0 -> "${alert.ticker} goes ex-dividend today — units bought from " +
+                    "today on don't receive this payment.$suffix"
+                days == 1 -> "${alert.ticker} goes ex-dividend tomorrow — buy by today's " +
+                    "close to receive this payment.$suffix"
+                else -> "${alert.ticker} goes ex-dividend in $days days.$suffix"
             }
         )
+    }
+
+    /** Whole local calendar days from [fromMillis]'s date to [toMillis]'s date. */
+    private fun calendarDaysBetween(fromMillis: Long, toMillis: Long): Int {
+        val zone = java.time.ZoneId.systemDefault()
+        val from = java.time.Instant.ofEpochMilli(fromMillis).atZone(zone).toLocalDate()
+        val to = java.time.Instant.ofEpochMilli(toMillis).atZone(zone).toLocalDate()
+        return java.time.temporal.ChronoUnit.DAYS.between(from, to).toInt()
     }
 
     // ── Latching ──────────────────────────────────────────────────────────

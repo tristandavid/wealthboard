@@ -6,12 +6,9 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import ca.tristan.portfolio.alerts.AlertEngine
-import ca.tristan.portfolio.alerts.AlertGate
-import ca.tristan.portfolio.alerts.AlertNotifier
+import ca.tristan.portfolio.alerts.AlertPass
 import ca.tristan.portfolio.data.MarketCalendar
 import ca.tristan.portfolio.data.PortfolioRepository
-import ca.tristan.portfolio.data.db.AlertKind
 import ca.tristan.portfolio.data.db.AppDatabase
 import ca.tristan.portfolio.data.db.HoldingType
 import kotlinx.coroutines.flow.first
@@ -74,33 +71,10 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
      * which families are live on this pass.
      */
     private suspend fun evaluateAlerts(
-        db: AppDatabase,
-        repo: PortfolioRepository
+        @Suppress("UNUSED_PARAMETER") db: AppDatabase,
+        @Suppress("UNUSED_PARAMETER") repo: PortfolioRepository
     ) {
-        if (!ca.tristan.portfolio.billing.Subscriptions.cachedIsPremium(applicationContext)) return
-        runCatching {
-            val dao = db.alertDao()
-            val enabled = dao.enabled()
-            if (enabled.isEmpty()) return@runCatching
-
-            // Which families are worth evaluating right now, decided from the
-            // tickers the user's own rules mention — so an alert on a coin
-            // keeps being checked overnight while an alert on an ETF does not.
-            val kinds = AlertGate.kindsFor(applicationContext, enabled.map { it.ticker })
-            if (kinds.isEmpty()) return@runCatching
-
-            val firings = AlertEngine.evaluate(dao, repo, kinds = kinds)
-
-            // Marked only after the pass that actually evaluated them, so a
-            // day's single check is not consumed by a pass that threw.
-            if (AlertKind.EX_DIVIDEND_WITHIN_DAYS in kinds) {
-                AlertGate.markExDividendChecked(applicationContext)
-            }
-
-            for (firing in firings) {
-                AlertNotifier.post(applicationContext, firing)
-            }
-        }
+        AlertPass.run(applicationContext)
     }
 
     /**
@@ -134,14 +108,20 @@ class SyncWorker(context: Context, params: WorkerParameters) : CoroutineWorker(c
         private const val WORK_NAME = "quote_refresh"
 
         fun schedule(context: Context) {
-            // 30-45 min flex window, jittered spacing rather than a fixed period
-            val jitterMinutes = (0..10).random()
+            // Every 15 minutes — WorkManager's floor — with a 5-minute flex
+            // window so runs don't land on a suspiciously exact cadence. It
+            // was 30–45 minutes, which meant a price alert could arrive most
+            // of an hour after the move. Outside market hours the pass is
+            // gated (see shouldSyncNow and AlertGate), so the shorter period
+            // costs almost nothing overnight.
             val request = PeriodicWorkRequestBuilder<SyncWorker>(
-                30L + jitterMinutes, TimeUnit.MINUTES,
-                15L, TimeUnit.MINUTES
+                15L, TimeUnit.MINUTES,
+                5L, TimeUnit.MINUTES
             ).build()
+            // UPDATE, not KEEP: KEEP left every existing install on the old
+            // interval forever, because the unique work already existed.
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-                WORK_NAME, ExistingPeriodicWorkPolicy.KEEP, request
+                WORK_NAME, ExistingPeriodicWorkPolicy.UPDATE, request
             )
         }
     }

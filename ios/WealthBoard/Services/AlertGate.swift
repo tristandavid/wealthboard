@@ -24,6 +24,13 @@ import Foundation
 enum AlertGate {
 
     private static let lastExDividendDayKey = "wealthboard.alertGate.lastExDividendDay"
+    private static let lastExDividendAtKey = "wealthboard.alertGate.lastExDividendAt"
+
+    /// How long one ex-dividend check stands. Funds announce during the day,
+    /// so once per day meant a distribution declared after the morning's pass
+    /// — or a pass that ran on a stale calendar — was not seen until the next
+    /// day, which for a short window can be after the ex-date itself.
+    private static let exDividendRecheck: TimeInterval = 3 * 60 * 60
 
     /// Exchange clock, matching `MarketCalendar`. The "day" an ex-dividend
     /// check belongs to is a New York day, not the device's: a user in Manila
@@ -76,10 +83,12 @@ enum AlertGate {
             kinds.insert(.dayMovePercent)
         }
 
-        // Ex-dividend rules: once per exchange day, whenever that day's first
-        // pass happens to be. More often than that is wasted — the answer is a
-        // date compared against today, and neither operand changes again until
-        // midnight. Less often risks skipping a day entirely.
+        // Ex-dividend rules: on the first pass of each exchange day, and again
+        // every few hours after it. The day matters because "within N days"
+        // turns true at midnight; the re-check matters because the DATE can
+        // change during the day — a fund announcing its distribution, or the
+        // calendar catching up — and waiting for tomorrow to notice can land
+        // after the ex-date itself.
         if isExDividendDue(now: now) {
             kinds.insert(.exDividendWithinDays)
         }
@@ -87,19 +96,23 @@ enum AlertGate {
         return kinds
     }
 
-    /// Whether today's ex-dividend check has yet to run.
+    /// Whether an ex-dividend check is due: none yet today, or the last one is
+    /// more than `exDividendRecheck` old.
     static func isExDividendDue(now: Date = Date()) -> Bool {
         let stored = UserDefaults.standard.integer(forKey: lastExDividendDayKey)
-        return stored != exchangeDay(now)
+        guard stored == exchangeDay(now) else { return true }
+        let lastAt = UserDefaults.standard.double(forKey: lastExDividendAtKey)
+        return lastAt <= 0 || now.timeIntervalSince1970 - lastAt >= exDividendRecheck
     }
 
-    /// Records that today's ex-dividend check has run.
+    /// Records that an ex-dividend check has run.
     ///
     /// Called only after a pass that actually evaluated those rules, so a pass
     /// skipped for any other reason — not Premium, no alerts, a thrown fetch —
     /// does not consume the day's single check.
     static func markExDividendChecked(now: Date = Date()) {
         UserDefaults.standard.set(exchangeDay(now), forKey: lastExDividendDayKey)
+        UserDefaults.standard.set(now.timeIntervalSince1970, forKey: lastExDividendAtKey)
     }
 
     /// The exchange-local date as `yyyyMMdd`, which compares and stores as one Int.

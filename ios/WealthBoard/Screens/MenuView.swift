@@ -245,10 +245,10 @@ struct MenuView: View {
             }
         } label: {
             MenuRow(
-                label: "Check alerts now",
+                label: "Check alerts now (debug)",
                 systemImage: "bell.badge.waveform",
                 subtitle: debugAlertResult
-                    ?? "Runs the alert engine immediately, instead of waiting for iOS to wake the background task"
+                    ?? "Debug builds only. Alerts already run by themselves — every 2 minutes while the app is open, and in the background when iOS allows. This forces one pass now, ignoring market hours."
             )
         }
         .buttonStyle(.plain)

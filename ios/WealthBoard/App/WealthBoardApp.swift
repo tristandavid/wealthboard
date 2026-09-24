@@ -71,6 +71,11 @@ struct WealthBoardApp: App {
                             // dependable rather than best-effort.
                             await AlertRunner.ensureNotificationPermission()
                             await AlertRunner.run()
+                            // Asked for at launch as well as on the way out,
+                            // so a background wake is pending even if the app
+                            // is never cleanly backgrounded.
+                            AlertBackgroundTask.schedule()
+                            AlertForegroundLoop.start()
                         }
                 } else {
                     LockView { unlocked = true }
@@ -177,6 +182,12 @@ struct WealthBoardApp: App {
                 AlertBackgroundTask.schedule()
             }
 
+            // The in-app timer only runs while the app is actually in front;
+            // in the background iOS decides, via the task scheduled above.
+            if phase != .active {
+                AlertForegroundLoop.stop()
+            }
+
             // And evaluated on the way back in, before the user has had time
             // to look at the portfolio and wonder why nothing told them.
             if phase == .active {
@@ -186,6 +197,7 @@ struct WealthBoardApp: App {
                     // dropping every firing.
                     await AlertRunner.ensureNotificationPermission()
                     await AlertRunner.run()
+                    AlertForegroundLoop.start()
                 }
             }
         }

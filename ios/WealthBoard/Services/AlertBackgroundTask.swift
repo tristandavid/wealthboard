@@ -66,6 +66,41 @@ enum AlertBackgroundTask {
     }
 }
 
+/// Keeps evaluating alerts while the app is open.
+///
+/// Alerts used to be evaluated once when the app came to the foreground and
+/// then never again until it left and came back — so a price that crossed a
+/// target while the portfolio was open on screen produced nothing, and the
+/// only way to get the notification was the developer "Check alerts now" row.
+/// This re-runs the same pass on a timer for as long as the app is active.
+/// `AlertGate` still decides what each pass evaluates, so outside market hours
+/// a tick costs nothing.
+@MainActor
+enum AlertForegroundLoop {
+
+    /// Two minutes: close enough to "live" for a threshold alert, far enough
+    /// apart not to lean on the quote endpoint.
+    private static let interval: UInt64 = 120
+
+    private static var task: Task<Void, Never>?
+
+    static func start() {
+        guard task == nil else { return }
+        task = Task { @MainActor in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: interval * 1_000_000_000)
+                guard !Task.isCancelled else { break }
+                await AlertRunner.run()
+            }
+        }
+    }
+
+    static func stop() {
+        task?.cancel()
+        task = nil
+    }
+}
+
 /// One evaluation pass, from whichever context asked for it.
 ///
 /// Shared by the background task and the foreground refresh so the two cannot
@@ -73,8 +108,17 @@ enum AlertBackgroundTask {
 /// lapsed subscriber would get alerts from one path and not the other.
 enum AlertRunner {
 
+    /// True while a pass is in flight. The foreground loop, the scene-active
+    /// hook and a background wake can all ask at once; two overlapping passes
+    /// would evaluate the same unlatched rule twice and post it twice.
+    @MainActor private static var isRunning = false
+
     @MainActor
     static func run() async {
+        guard !isRunning else { return }
+        isRunning = true
+        defer { isRunning = false }
+
         // Premium-gated here rather than only on the screen that creates
         // alerts: someone whose subscription lapses keeps their saved rules —
         // deleting them would be destroying the user's own configuration over
@@ -90,13 +134,20 @@ enum AlertRunner {
         SubscriptionSession.shared.sync()
         let entitled = SubscriptionSession.shared.isPremium
             || SubscriptionSession.cachedIsPremium
-        guard entitled else { return }
+        guard entitled else {
+            // Reminders already handed to iOS would otherwise still arrive.
+            await ExDividendReminders.cancelAll()
+            return
+        }
 
         guard await AlertNotifier.canPost() else { return }
 
         let repository = PortfolioRepository()
         let alerts = await repository.alerts()
-        guard !alerts.isEmpty else { return }
+        guard !alerts.isEmpty else {
+            await ExDividendReminders.reschedule(alerts: [], upcoming: [:])
+            return
+        }
 
         // Which rule families are worth evaluating right now, decided from the
         // tickers the user's own rules mention — so an alert on a coin keeps
@@ -107,7 +158,7 @@ enum AlertRunner {
         )
         guard !kinds.isEmpty else { return }
 
-        let (firings, changed) = await AlertEngine.evaluate(
+        let (firings, changed, exDividends) = await AlertEngine.evaluate(
             alerts: alerts,
             repository: repository,
             kinds: kinds
@@ -124,7 +175,29 @@ enum AlertRunner {
         // missed notification; the other order would re-announce the same
         // firing on every pass forever.
         await repository.applyAlertState(changed)
+        await post(firings, alerts: alerts)
+
+        // Hand the next ex-dividend reminders to iOS while the dates are
+        // fresh, from the latch state just written — see ExDividendReminders.
+        if kinds.contains(.exDividendWithinDays) {
+            await ExDividendReminders.reschedule(
+                alerts: await repository.alerts(),
+                upcoming: exDividends
+            )
+        }
+    }
+
+    /// Posts each firing — except an ex-dividend one iOS has already shown as
+    /// a pre-scheduled reminder for the same date.
+    @MainActor
+    private static func post(_ firings: [AlertFiring], alerts: [PriceAlert]) async {
+        let exDividendIds = Set(alerts.filter { $0.kind == .exDividendWithinDays }.map(\.id))
         for firing in firings {
+            if exDividendIds.contains(firing.alertId) {
+                let alreadyShown = ExDividendReminders.shouldSuppress(firing)
+                ExDividendReminders.cancel(alertId: firing.alertId)
+                if alreadyShown { continue }
+            }
             await AlertNotifier.post(firing)
         }
     }
@@ -221,14 +294,12 @@ enum AlertRunner {
         let alerts = await repository.alerts()
         let enabledCount = alerts.filter { $0.enabled }.count
 
-        let (firings, changed) = await AlertEngine.evaluate(
+        let (firings, changed, _) = await AlertEngine.evaluate(
             alerts: alerts,
             repository: repository
         )
         await repository.applyAlertState(changed)
-        for firing in firings {
-            await AlertNotifier.post(firing)
-        }
+        await post(firings, alerts: alerts)
         return DebugOutcome(
             fired: firings.count,
             wasPremium: true,

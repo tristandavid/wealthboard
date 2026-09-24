@@ -312,11 +312,12 @@ fun MenuScreen(
                         Divider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))
 
                         MenuNavRow(
-                            label = "Check alerts now",
+                            label = "Check alerts now (debug)",
                             icon = Icons.Filled.NotificationsActive,
                             subtitle = debugAlertResult
-                                ?: "Runs the alert engine immediately, skipping the " +
-                                "30–45 min worker and the markets-closed check",
+                                ?: "Debug builds only. Alerts already run by themselves — " +
+                                "every 2 minutes while the app is open and every 15 minutes " +
+                                "in the background. This forces one pass now, ignoring market hours.",
                             onClick = {
                                 debugAlertResult = "Checking…"
                                 viewModel.debugRunAlertCheck(BuildConfig.DEBUG) { fired, wasPremium, delivery, detail ->

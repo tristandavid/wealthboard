@@ -33,6 +33,14 @@ object AlertGate {
 
     private const val PREFS_NAME = "alert_gate"
     private const val KEY_LAST_EX_DIVIDEND_DAY = "last_ex_dividend_day"
+    private const val KEY_LAST_EX_DIVIDEND_AT = "last_ex_dividend_at"
+
+    /**
+     * How long one ex-dividend check stands. Funds announce during the day, so
+     * once per day meant a distribution declared after the morning's pass was
+     * not seen until the next day — for a short window, after the ex-date.
+     */
+    private const val EX_DIVIDEND_RECHECK_MS = 3L * 60 * 60 * 1000
 
     /**
      * Exchange clock, matching [MarketCalendar]. The "day" an ex-dividend
@@ -87,10 +95,12 @@ object AlertGate {
             kinds += AlertKind.DAY_MOVE_PERCENT
         }
 
-        // Ex-dividend rules: once per exchange day, whenever that day's first
-        // pass happens to be. More often than that is wasted — the answer is a
-        // date compared against today, and neither operand changes again until
-        // midnight. Less often risks skipping a day entirely.
+        // Ex-dividend rules: on the first pass of each exchange day, and again
+        // every few hours after it. The day matters because "within N days"
+        // turns true at midnight; the re-check matters because the DATE can
+        // change during the day — a fund announcing its distribution, or the
+        // calendar catching up — and waiting for tomorrow can land after the
+        // ex-date itself.
         if (exDividendDueToday(context, nowMillis)) {
             kinds += AlertKind.EX_DIVIDEND_WITHIN_DAYS
         }
@@ -98,13 +108,15 @@ object AlertGate {
         return kinds
     }
 
-    /** Whether today's ex-dividend check has yet to run. */
+    /** Whether an ex-dividend check is due: none yet today, or the last one is over three hours old. */
     fun exDividendDueToday(
         context: Context,
         nowMillis: Long = System.currentTimeMillis()
     ): Boolean {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        return prefs.getInt(KEY_LAST_EX_DIVIDEND_DAY, 0) != exchangeDay(nowMillis)
+        if (prefs.getInt(KEY_LAST_EX_DIVIDEND_DAY, 0) != exchangeDay(nowMillis)) return true
+        val lastAt = prefs.getLong(KEY_LAST_EX_DIVIDEND_AT, 0L)
+        return lastAt <= 0L || nowMillis - lastAt >= EX_DIVIDEND_RECHECK_MS
     }
 
     /**
@@ -121,6 +133,7 @@ object AlertGate {
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
             .putInt(KEY_LAST_EX_DIVIDEND_DAY, exchangeDay(nowMillis))
+            .putLong(KEY_LAST_EX_DIVIDEND_AT, nowMillis)
             .apply()
     }
 
