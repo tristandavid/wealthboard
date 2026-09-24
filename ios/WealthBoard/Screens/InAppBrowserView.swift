@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import WebKit
 
 /// A minimal in-app browser, used to read a news article without leaving the
@@ -21,8 +22,11 @@ struct InAppBrowserView: View {
     var body: some View {
         ZStack(alignment: .top) {
             if let resolved = URL(string: url) {
+                // Bottom safe area respected, not ignored. Drawn under the
+                // tab bar, a page's fixed footer — a cookie or consent banner
+                // is the usual one — sat behind it with its Accept/Close
+                // button out of reach, so the banner could never be dismissed.
                 WebViewContainer(url: resolved, progress: $progress, isLoading: $isLoading)
-                    .ignoresSafeArea(edges: .bottom)
             } else {
                 EmptyNote(text: "That link doesn't look like a web address.")
                     .padding(WbDimens.screenPadding)
@@ -38,6 +42,9 @@ struct InAppBrowserView: View {
             }
         }
         .wbScreenBackground(scheme)
+        // An article gets the whole screen. The floating tab bar covered the
+        // bottom of every page, and a reader has the back button to leave.
+        .toolbar(.hidden, for: .tabBar)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -81,15 +88,22 @@ private struct WebViewContainer: UIViewRepresentable {
         webView.scrollView.contentInsetAdjustmentBehavior = .always
 
         context.coordinator.observe(webView)
+        context.coordinator.requestedURL = url
         webView.load(URLRequest(url: url))
         return webView
     }
 
     func updateUIView(_ webView: WKWebView, context: Context) {
-        // Reload only when the URL actually changed — updateUIView runs on
-        // every state change, and reloading on each one would restart the
-        // article every time the progress bar moved.
-        guard webView.url != url else { return }
+        // Load only when the CALLER asked for a different page.
+        //
+        // This used to compare against `webView.url` — where the page ended
+        // up, not what was asked for. Any site that redirects (BBC sends
+        // bbc.co.uk links to bbc.com, most sites add tracking parameters or
+        // rewrite the address as the article loads) never matches the link it
+        // was opened with, and updateUIView runs on every progress tick, so
+        // each tick started the article over: an endless reload loop.
+        guard context.coordinator.requestedURL != url else { return }
+        context.coordinator.requestedURL = url
         webView.load(URLRequest(url: url))
     }
 
@@ -102,6 +116,8 @@ private struct WebViewContainer: UIViewRepresentable {
         @Binding private var progress: Double
         @Binding private var isLoading: Bool
         private var observation: NSKeyValueObservation?
+        /// The last URL this view was asked to show — see `updateUIView`.
+        var requestedURL: URL?
 
         init(progress: Binding<Double>, isLoading: Binding<Bool>) {
             _progress = progress
@@ -111,9 +127,38 @@ private struct WebViewContainer: UIViewRepresentable {
         func observe(_ webView: WKWebView) {
             observation = webView.observe(\.estimatedProgress, options: [.new]) { [weak self] view, _ in
                 Task { @MainActor in
-                    self?.progress = view.estimatedProgress
+                    // Only meaningful changes: every write re-renders the
+                    // SwiftUI view around the page.
+                    guard let self, abs(self.progress - view.estimatedProgress) >= 0.05
+                            || view.estimatedProgress >= 1 else { return }
+                    self.progress = view.estimatedProgress
                 }
             }
+        }
+
+        /// Links that are not web pages (mail, phone, app-store and app deep
+        /// links) are handed to the system instead of failing silently inside
+        /// the web view.
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationAction: WKNavigationAction,
+            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+        ) {
+            if let target = navigationAction.request.url,
+               let scheme = target.scheme?.lowercased(),
+               !["http", "https", "about", "data", "blob", "javascript"].contains(scheme) {
+                UIApplication.shared.open(target)
+                decisionHandler(.cancel)
+                return
+            }
+            // target="_blank" links would otherwise open nowhere: WKWebView
+            // has no second window to put them in. Load them here instead.
+            if navigationAction.targetFrame == nil {
+                webView.load(navigationAction.request)
+                decisionHandler(.cancel)
+                return
+            }
+            decisionHandler(.allow)
         }
 
         func stopObserving() {
