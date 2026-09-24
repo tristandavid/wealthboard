@@ -181,7 +181,7 @@ fun PortfolioApp(viewModel: PortfolioViewModel, activity: FragmentActivity) {
     //
     // Premium, notification permission and market hours are all checked
     // inside AlertPass, so a tick is a no-op for anyone with nothing to check.
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
     LaunchedEffect(lifecycleOwner) {
         ca.tristan.portfolio.billing.Subscriptions
             .loadDebugOverride(BuildConfig.DEBUG, context)
