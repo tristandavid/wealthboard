@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- WealthBoard brand palette: deep navy + warm gold, a common
+         "trustworthy finance" pairing. Used by the launcher icon and the
+         in-app Material3 theme (see Theme.kt) so both match. -->
+    <color name="brand_navy">#0F2A43</color>
+    <color name="brand_navy_dark">#0A1D2F</color>
+    <color name="brand_gold">#C9A227</color>
+    <color name="brand_gold_light">#E4C766</color>
+    <color name="brand_ivory">#F4F1E8</color>
+</resources>

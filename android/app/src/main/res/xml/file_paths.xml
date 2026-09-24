@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Paths the FileProvider is allowed to hand out to other apps.
+
+    Only the generated-reports folder inside the app cache is exposed: the
+    share sheet needs a content:// URI for the PDF, and nothing else in the
+    app's storage should be reachable from outside it.
+-->
+<paths>
+    <cache-path name="reports" path="reports/" />
+</paths>

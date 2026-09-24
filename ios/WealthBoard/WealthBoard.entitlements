@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Sign in with Apple.
+
+	     Required by App Store guideline 4.8: an app offering any third-party
+	     sign-in must offer Apple's too, and the Google button on the sign-in
+	     screen puts this build in scope.
+
+	     THIS FILE IS A REFERENCE, NOT THE SOURCE OF TRUTH. An entitlement for
+	     a capability the App ID does not carry makes signing fail outright
+	     ("Cannot create a iOS App Development provisioning profile"), so the
+	     capability has to be added through Xcode ▸ Signing & Capabilities ▸
+	     + Capability ▸ Sign in with Apple, which registers it against the App
+	     ID on Apple's side AND writes this key itself. Do not point
+	     CODE_SIGN_ENTITLEMENTS at this file by hand and expect it to work. -->
+	<key>com.apple.developer.applesignin</key>
+	<array>
+		<string>Default</string>
+	</array>
+</dict>
+</plist>

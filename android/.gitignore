@@ -1,0 +1,22 @@
+# Build output
+*.iml
+.gradle/
+build/
+app/build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Android Studio / IntelliJ
+.idea/
+*.hprd
+
+# Release signing — never commit the real keystore or its credentials.
+# See keystore.properties.example for the template.
+keystore.properties
+*.jks
+*.keystore
+
+# OS cruft
+.DS_Store

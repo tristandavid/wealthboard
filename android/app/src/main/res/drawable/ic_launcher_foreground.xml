@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WealthBoard mark: three ascending bars with a rising trend line and
+     arrowhead over them.
+
+     Geometry is sized so that the artwork fills the launcher's masked
+     viewport — the inner 72dp of this 108dp layer — the way the approved
+     artwork does, with the whole mark inside a 36dp-radius circle about the
+     centre. That is what keeps the arrow tip and the bars' bottom corners
+     intact under a circular mask as well as a rounded-square one. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- bar 1 (shortest) -->
+    <path
+        android:fillColor="#E4C766"
+        android:pathData="M34.22,64.61 L45.68,64.61 L45.68,77.71 L34.22,77.71 Z" />
+    <!-- bar 2 -->
+    <path
+        android:fillColor="#F4F1E8"
+        android:pathData="M48.14,53.14 L59.61,53.14 L59.61,77.71 L48.14,77.71 Z" />
+    <!-- bar 3 (tallest) -->
+    <path
+        android:fillColor="#E4C766"
+        android:pathData="M62.06,40.04 L73.53,40.04 L73.53,77.71 L62.06,77.71 Z" />
+
+    <!-- rising trend line + arrowhead above the bars -->
+    <path
+        android:strokeColor="#F4F1E8"
+        android:strokeWidth="2.78"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M31.76,49.86 L49.78,38.4 L59.61,44.95 L75.99,30.21" />
+    <path
+        android:fillColor="#F4F1E8"
+        android:pathData="M75.99,30.21 L67.8,31.44 L74.51,37.58 Z" />
+</vector>

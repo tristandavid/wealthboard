@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      The full product name, used wherever there is room for it: the Play
+      listing title, the About screen, share text.
+    -->
+    <string name="app_name">WealthBoard: Dividend Tracker</string>
+
+    <!--
+      The launcher label, deliberately short.
+      Android gives a home-screen icon roughly 10-12 characters before it
+      truncates with an ellipsis, so the full name would read "WealthBoard:…"
+      and the words that say what the app IS would be the ones cut. The brand
+      alone survives intact and is what the user is looking for on their home
+      screen anyway.
+    -->
+    <string name="app_launcher_name">WealthBoard</string>
+</resources>

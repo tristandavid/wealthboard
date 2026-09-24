@@ -1,0 +1,15 @@
+# Firebase client configs are kept out of this public repository.
+# Drop your own copies in locally before building:
+#   android/app/google-services.json
+#   ios/WealthBoard/Resources/GoogleService-Info.plist
+android/app/google-services.json
+ios/WealthBoard/Resources/GoogleService-Info.plist
+
+# Xcode
+**/xcuserdata/
+DerivedData/
+ios/build/
+
+# OS cruft
+.DS_Store
+__MACOSX/

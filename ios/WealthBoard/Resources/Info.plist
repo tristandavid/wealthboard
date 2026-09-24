@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>WealthBoard</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>LSRequiresIPhoneOS</key>
+	<true/>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>AccentColor</string>
+	</dict>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<!--
+	    arm64, not armv7.
+	    
+	    armv7 is 32-bit ARM, last seen on the iPhone 5 and dropped by iOS 11.
+	    Declaring it on an app whose deployment target is iOS 16 asks the store
+	    to require an instruction set none of its devices has. It is inherited
+	    boilerplate rather than a decision, and this is the decision.
+	-->
+	<key>UIRequiredDeviceCapabilities</key>
+	<array>
+		<string>arm64</string>
+	</array>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+	</array>
+	<key>UISupportedInterfaceOrientations~ipad</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationPortraitUpsideDown</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
+	<!--
+	    Market data and news feeds are read over HTTPS from public endpoints.
+	    No ATS exception is needed and none is declared: every host the app
+	    talks to supports TLS, and adding a blanket exception would weaken the
+	    app for the convenience of a request it never makes.
+	-->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
+	<!--
+	    Required by LocalAuthentication whenever Face ID is evaluated. Without
+	    it the app is terminated at the moment the app lock first runs, which
+	    is the one moment a lock must not fail.
+	-->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Unlock WealthBoard with Face ID instead of typing a PIN.</string>
+	<!--
+	    The OAuth redirect Google's sign-in sheet returns on. This is the
+	    REVERSED_CLIENT_ID out of GoogleService-Info.plist, and it has to match
+	    it exactly — if the two ever disagree the sheet opens, the user signs
+	    in, and the app is never handed the result, which looks like a hang
+	    rather than a misconfiguration.
+
+	    Unlike Sign in with Apple this is purely an Info.plist matter: no
+	    capability, no provisioning profile, nothing to register in the
+	    developer account. So it is declared here rather than left as a manual
+	    Xcode step.
+
+	    Re-downloading the plist after changing Firebase providers can change
+	    the value; if Google sign-in stops returning, check these two first.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.336382017055-8bv9f80erura0om1qgr51ocu6rcnl55r</string>
+			</array>
+		</dict>
+	</array>
+
+	<!-- Alerts. "fetch" is what lets BGAppRefreshTask wake the app to check
+	     price thresholds and ex-dividend dates; the identifier below must
+	     match AlertBackgroundTask.identifier exactly, or registration throws
+	     on debug and silently never fires on release. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>ca.tristan.wealthboard.alertrefresh</string>
+	</array>
+</dict>
+</plist>

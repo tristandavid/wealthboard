@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Notification small icon: the WealthBoard mark as a flat silhouette.
+
+     A notification icon is masked to a single colour by the system, so this
+     is deliberately NOT the launcher icon — that one's navy background and
+     two-tone bars would come out as a solid blob. Only the shapes are kept,
+     all in white, on transparent, sized to the 24dp icon box with the usual
+     ~2dp of breathing room inside it. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24"
+    android:tint="#FFFFFF">
+
+    <!-- three ascending bars -->
+    <path android:fillColor="#FFFFFF" android:pathData="M4,14 L8,14 L8,20 L4,20 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M10,11 L14,11 L14,20 L10,20 Z" />
+    <path android:fillColor="#FFFFFF" android:pathData="M16,7 L20,7 L20,20 L16,20 Z" />
+
+    <!-- rising trend line + arrowhead above them -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="1.6"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:pathData="M3,10 L9,6.5 L13,8.5 L20,3.5" />
+    <path android:fillColor="#FFFFFF" android:pathData="M20.6,3.2 L17,3.6 L19.4,5.8 Z" />
+</vector>

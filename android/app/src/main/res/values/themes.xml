@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.WealthBoard" parent="android:Theme.Material.Light.NoActionBar" />
+
+    <!--
+        OS-level splash (androidx.core.splashscreen). Covers the gap between
+        process start and Compose's first frame with the brand background and
+        the static launcher mark, rather than a plain white window. MainActivity
+        hands off to it via installSplashScreen(), and postSplashScreenTheme
+        below is what restores Theme.WealthBoard once it exits.
+    -->
+    <style name="Theme.WealthBoard.Splash" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/brand_navy</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.WealthBoard</item>
+    </style>
+</resources>
