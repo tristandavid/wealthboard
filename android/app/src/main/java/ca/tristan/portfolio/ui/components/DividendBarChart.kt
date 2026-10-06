@@ -384,7 +384,7 @@ private fun axisLabels(values: List<Double>): List<String> {
     if (nonZero.isEmpty()) return values.map { "0" }
     for (digits in 0..5) {
         val out = values.map { v ->
-            if (v <= 0.0) "0" else String.format(Locale.US, "%,.${digits}f", v)
+            if (v <= 0.0) "0" else String.format(Locale.US, "%.${digits}f", v)
         }
         if (out.distinct().size == out.size) return out
     }

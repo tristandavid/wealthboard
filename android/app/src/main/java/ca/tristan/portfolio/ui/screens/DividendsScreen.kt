@@ -1,6 +1,9 @@
 package ca.tristan.portfolio.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.border
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -112,9 +115,9 @@ private val divDateFmt: DateFormat = DateFormat.getDateInstance(DateFormat.MEDIU
 // height and the value label's offset have to be derived from the same
 // numbers — a label positioned against a different height than the bar it
 // belongs to drifts away from its bar as the value changes.
-private const val PLOT_HEIGHT_DP = 132        // axis column + bar area + month label
-private const val BAR_AREA_DP = 116f          // what the bars themselves get
-private const val BAR_HEADROOM = 0.82f        // fraction of the bar area bars may fill
+private const val MI_PLOT_HEIGHT = 150f       // bar area — same as iOS plotHeight
+private const val MI_LABELS_HEIGHT = 25f      // value label + month label + spacing
+private const val MI_HEADROOM = 0.82f         // fraction of the plot bars may fill
 
 /** Rounds a chart's maximum up to a readable 1/2/5 × 10^n step. */
 private fun niceAxisMax(v: Double): Double {
@@ -138,7 +141,7 @@ private fun niceAxisMax(v: Double): Double {
 private fun incomeAxisLabels(values: List<Double>): List<String> {
     for (digits in 0..4) {
         val out = values.map { v ->
-            if (v <= 0.0) "0" else String.format(Locale.US, "%,.${digits}f", v)
+            if (v <= 0.0) "0" else String.format(Locale.US, "%.${digits}f", v)
         }
         if (out.distinct().size == out.size) return out
     }
@@ -1205,12 +1208,6 @@ private fun MonthlyIncomeCard(
     currencyCode: String,
     seriesColors: Map<String, Color>
 ) {
-    val maxVal   = bars.maxOfOrNull { it.total }?.takeIf { it > 0 } ?: 1.0
-    // Accent for the chrome around the plot (the selected-bar strip, the
-    // highlighted month label). The bars themselves are per-holding now, so
-    // this is no longer the colour of anything inside the chart.
-    val barColor = if (isForward) DivBarFwd else DivBarActual
-
     Card(
         modifier  = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
         shape     = RoundedCornerShape(16.dp),
@@ -1254,85 +1251,7 @@ private fun MonthlyIncomeCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            // Selected bar detail strip
-            if (selectedIndex != null && selectedIndex < bars.size) {
-                val selectedBar = bars[selectedIndex]
-                val lbl = selectedBar.label
-                val amt = selectedBar.total
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(barColor.copy(alpha = 0.1f))
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment     = Alignment.CenterVertically
-                ) {
-                    Text(lbl, fontWeight = FontWeight.SemiBold, color = barColor, fontSize = 14.sp)
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            Money.format(amt, currencyCode),
-                            fontWeight = FontWeight.ExtraBold,
-                            color      = barColor,
-                            fontSize   = 17.sp
-                        )
-                        if (isForward) {
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(DivAmber.copy(alpha = 0.15f))
-                                    .padding(horizontal = 5.dp, vertical = 2.dp)
-                            ) {
-                                Text("est.", fontSize = 10.sp, color = DivAmber,
-                                    fontWeight = FontWeight.Medium)
-                            }
-                        }
-                    }
-                }
-                // What that month is actually made of. The stack already shows
-                // the split visually; this is the same split with the figures,
-                // which is what someone who tapped a specific month wants.
-                if (selectedBar.slices.isNotEmpty()) {
-                    Spacer(Modifier.height(6.dp))
-                    selectedBar.slices.forEach { slice ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 2.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Box(
-                                    Modifier
-                                        .size(8.dp)
-                                        .clip(RoundedCornerShape(2.dp))
-                                        .background(
-                                            seriesColors[slice.key] ?: SeriesPalette.Unknown
-                                        )
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    slice.label,
-                                    fontSize = 11.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    maxLines = 1
-                                )
-                            }
-                            Text(
-                                Money.format(slice.amount, currencyCode),
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(12.dp))
 
             // An all-zero series still draws twelve month labels under an empty
             // plot, which reads as the chart having failed rather than as there
@@ -1356,147 +1275,242 @@ private fun MonthlyIncomeCard(
                     )
                 }
             } else {
-            // Bar chart — each bar is individually clickable.
-            //
-            // Laid out like the income chart further down the screen: a labelled
-            // y-axis on the left, the value printed above each bar, and the
-            // month underneath. The bars alone made you tap one to learn what
-            // any of them were worth, which is a poor trade for a chart whose
-            // whole purpose is comparing months.
-            val axisMax = niceAxisMax(maxVal)
-            Row(modifier = Modifier.fillMaxWidth()) {
-                Column(
-                    modifier = Modifier.width(40.dp).height(PLOT_HEIGHT_DP.dp),
-                    verticalArrangement = Arrangement.SpaceBetween,
-                    horizontalAlignment = Alignment.End
-                ) {
-                    incomeAxisLabels((4 downTo 0).map { axisMax * it / 4.0 }).forEach {
-                        Text(
-                            it,
-                            fontSize = 8.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
-                        )
-                    }
-                }
-                Spacer(Modifier.width(6.dp))
-                Row(
-                    modifier = Modifier.weight(1f).height(PLOT_HEIGHT_DP.dp),
-                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                ) {
-                    bars.forEachIndexed { i, bar ->
-                        val value = bar.total
-                        val frac = if (axisMax > 0) (value / axisMax).toFloat().coerceIn(0f, 1f) else 0f
-                        val isSelected = selectedIndex == i
-                        val alpha = if (selectedIndex == null || isSelected) 1f else 0.45f
+                // Geometry mirrors StackedColumnChart in the iOS build
+                // (Charts.swift) so the two platforms draw the same chart:
+                // full-width columns 3dp apart, bars rounded on every corner,
+                // the largest holding on TOP of the stack, a dark outline on
+                // the tapped bar, and every other bar faded to 45%.
+                MonthlyIncomeColumns(
+                    bars = bars,
+                    selectedIndex = selectedIndex,
+                    onBarSelected = onBarSelected,
+                    seriesColors = seriesColors
+                )
 
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
-                                .clickable { onBarSelected(i) },
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Bottom
-                        ) {
-                            Box(
-                                modifier = Modifier.weight(1f).fillMaxWidth(),
-                                contentAlignment = Alignment.BottomCenter
-                            ) {
-                                // Bars fill BAR_HEADROOM of the plot, never
-                                // all of it, so the value label above a
-                                // full-height bar always has somewhere to sit
-                                // instead of being clipped off the top.
-                                val barFrac = (frac * BAR_HEADROOM)
-                                    .coerceAtLeast(if (value > 0) 0.02f else 0f)
-                                // One segment per holding, stacked largest at
-                                // the bottom. Each segment is sized as its
-                                // share of the bar's own total, so the stack
-                                // adds up to exactly the height a single
-                                // block would have had.
-                                Column(
-                                    modifier = Modifier
-                                        .fillMaxWidth(if (isSelected) 0.85f else 0.7f)
-                                        .fillMaxHeight(barFrac)
-                                        .clip(RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp)),
-                                    verticalArrangement = Arrangement.Bottom
-                                ) {
-                                    // Top-down in the layout means reversed:
-                                    // the smallest slice is drawn first so the
-                                    // largest ends up sitting on the axis.
-                                    bar.slices.reversed().forEach { slice ->
-                                        val share =
-                                            if (value > 0) (slice.amount / value).toFloat() else 0f
-                                        if (share <= 0f) return@forEach
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .weight(share)
-                                                .background(
-                                                    (seriesColors[slice.key] ?: SeriesPalette.Unknown)
-                                                        .copy(alpha = alpha)
-                                                )
-                                        )
-                                    }
-                                    // Nothing attributable (a payment logged
-                                    // against a deleted holding) still has to
-                                    // occupy the bar, or the total above it
-                                    // would not match its height.
-                                    val attributed = bar.slices.sumOf { it.amount }
-                                    val remainder = (value - attributed).coerceAtLeast(0.0)
-                                    if (value > 0 && remainder > 0) {
-                                        Box(
-                                            modifier = Modifier
-                                                .fillMaxWidth()
-                                                .weight((remainder / value).toFloat())
-                                                .background(barColor.copy(alpha = alpha))
-                                        )
-                                    }
-                                }
-                                if (value > 0) {
-                                    Text(
-                                        Money.compact(value),
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = alpha),
-                                        maxLines = 1,
-                                        modifier = Modifier
-                                            .align(Alignment.BottomCenter)
-                                            .padding(
-                                                bottom = (barFrac * BAR_AREA_DP).dp + 2.dp
-                                            )
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.height(3.dp))
+                // The breakdown sits UNDER the chart, in a neutral panel, as on
+                // iOS — the month and its total, then one row per holding.
+                if (selectedIndex != null && selectedIndex < bars.size) {
+                    Spacer(Modifier.height(10.dp))
+                    SelectedMonthDetail(
+                        bar = bars[selectedIndex],
+                        currencyCode = currencyCode,
+                        seriesColors = seriesColors
+                    )
+                }
+
+                // Legend: only the holdings that actually appear in this window,
+                // so a twenty-holding portfolio doesn't print twenty swatches
+                // under a chart showing income from three of them.
+                val present = bars.flatMap { it.slices }
+                    .groupBy { it.key }
+                    .mapValues { (_, s) -> s.sumOf { it.amount } }
+                    .entries.sortedByDescending { it.value }
+                if (present.isNotEmpty()) {
+                    Spacer(Modifier.height(12.dp))
+                    IncomeSeriesLegend(
+                        entries = present.map { (key, _) ->
+                            key to (seriesColors[key] ?: SeriesPalette.Unknown)
+                        }
+                    )
+                }
+            }
+        }
+    }
+}
+
+// ── Monthly Income columns (port of iOS StackedColumnChart) ──────────────────
+
+/**
+ * The twelve stacked columns, laid out exactly as iOS lays them out: a 150dp
+ * plot plus 25dp for the value and month labels, bars filling at most 82% of
+ * the plot, value label riding 2dp above its own bar.
+ */
+@Composable
+private fun MonthlyIncomeColumns(
+    bars: List<StackedIncomeBar>,
+    selectedIndex: Int?,
+    onBarSelected: (Int) -> Unit,
+    seriesColors: Map<String, Color>
+) {
+    val maxTotal = bars.maxOfOrNull { it.total } ?: 0.0
+    val axisMax = niceAxisMax(maxTotal)
+    val axisLabels = incomeAxisLabels((4 downTo 0).map { axisMax * it / 4.0 })
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val columnHeight = (MI_PLOT_HEIGHT + MI_LABELS_HEIGHT).dp
+
+    Row(
+        modifier = Modifier.fillMaxWidth().height(columnHeight),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
+        verticalAlignment = Alignment.Bottom
+    ) {
+        // Value axis. iOS stacks five 37.5pt slots inside a shorter frame and
+        // lets them overflow it evenly, so the gridline labels sit a little
+        // above the bars' baseline and "1000" pokes above the plot. Placed
+        // by offset here so every label lands where it does on iPhone.
+        val slot = MI_PLOT_HEIGHT / (axisLabels.size - 1).coerceAtLeast(1)
+        val stack = slot * axisLabels.size
+        val axisFrame = MI_PLOT_HEIGHT + 6f
+        val stackTopFromBottom = 16f + axisFrame / 2f + stack / 2f
+        Box(modifier = Modifier.width(38.dp).fillMaxHeight()) {
+            axisLabels.forEachIndexed { i, label ->
+                val topFromBottom = stackTopFromBottom - slot * i
+                Text(
+                    label,
+                    fontSize = 9.sp,
+                    color = onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .offset(y = (MI_PLOT_HEIGHT + MI_LABELS_HEIGHT - topFromBottom).dp)
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.weight(1f).fillMaxHeight(),
+            horizontalArrangement = Arrangement.spacedBy(3.dp),
+            verticalAlignment = Alignment.Bottom
+        ) {
+            bars.forEachIndexed { i, bar ->
+                val total = bar.total
+                val fraction = if (axisMax > 0) (total / axisMax).coerceIn(0.0, 1.0) else 0.0
+                val barHeight = MI_PLOT_HEIGHT * fraction.toFloat() * MI_HEADROOM
+                val isSelected = selectedIndex == i
+                val faded = selectedIndex != null && !isSelected
+                val shape = RoundedCornerShape(3.dp)
+
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null
+                        ) { onBarSelected(i) },
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(2.dp, Alignment.Bottom)
+                ) {
+                    Box(Modifier.height(11.dp), contentAlignment = Alignment.Center) {
+                        if (total > 0) {
                             Text(
-                                bar.label,
-                                fontSize   = 8.sp,
-                                color      = if (isSelected) barColor
-                                             else MaterialTheme.colorScheme.onSurfaceVariant
-                                                      .copy(alpha = 0.7f),
-                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                textAlign  = TextAlign.Center,
-                                maxLines   = 1
+                                Money.compact(total),
+                                fontSize = 8.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = onSurface,
+                                maxLines = 1,
+                                softWrap = false
                             )
                         }
                     }
+
+                    // Slices top-down in the order they come, largest first,
+                    // so the biggest holding sits on top — as on iOS.
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(barHeight.coerceAtLeast(1f).dp)
+                            .alpha(if (faded) 0.45f else 1f)
+                            .clip(shape)
+                            .then(
+                                if (isSelected) Modifier.border(1.5.dp, onSurface, shape)
+                                else Modifier
+                            ),
+                        verticalArrangement = Arrangement.Bottom
+                    ) {
+                        bar.slices.forEach { slice ->
+                            val share = if (total > 0) (slice.amount / total).toFloat() else 0f
+                            if (share <= 0f) return@forEach
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height((barHeight * share).coerceAtLeast(1f).dp)
+                                    .background(seriesColors[slice.key] ?: SeriesPalette.Unknown)
+                            )
+                        }
+                        // Nothing attributable (a payment logged against a
+                        // deleted holding) still has to fill the bar, or the
+                        // total above it would not match its height.
+                        val attributed = bar.slices.sumOf { it.amount }
+                        val remainder = (total - attributed).coerceAtLeast(0.0)
+                        if (total > 0 && remainder > 0) {
+                            Box(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .height((barHeight * (remainder / total).toFloat()).dp)
+                                    .background(DivBarActual)
+                            )
+                        }
+                    }
+
+                    Text(
+                        bar.label,
+                        fontSize = 9.sp,
+                        color = onSurfaceVariant,
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.height(12.dp)
+                    )
                 }
             }
+        }
+    }
+}
 
-            // Legend: only the holdings that actually appear in this window,
-            // so a twenty-holding portfolio doesn't print twenty swatches
-            // under a chart showing income from three of them.
-            val present = bars.flatMap { it.slices }
-                .groupBy { it.key }
-                .mapValues { (_, s) -> s.sumOf { it.amount } }
-                .entries.sortedByDescending { it.value }
-            if (present.isNotEmpty()) {
-                Spacer(Modifier.height(12.dp))
-                IncomeSeriesLegend(
-                    entries = present.map { (key, _) ->
-                        key to (seriesColors[key] ?: SeriesPalette.Unknown)
-                    }
+/** The tapped month's breakdown — the iOS SelectedBarDetail panel. */
+@Composable
+private fun SelectedMonthDetail(
+    bar: StackedIncomeBar,
+    currencyCode: String,
+    seriesColors: Map<String, Color>
+) {
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(bar.label, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = onSurface)
+            Text(
+                Money.format(bar.total, currencyCode),
+                fontSize = 14.sp,
+                fontWeight = FontWeight.Bold,
+                color = onSurface
+            )
+        }
+        bar.slices.forEach { slice ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier
+                        .size(8.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(seriesColors[slice.key] ?: SeriesPalette.Unknown)
                 )
-            }
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    slice.label,
+                    fontSize = 12.sp,
+                    color = onSurfaceVariant,
+                    maxLines = 1,
+                    modifier = Modifier.weight(1f)
+                )
+                Text(
+                    Money.format(slice.amount, currencyCode),
+                    fontSize = 12.sp,
+                    color = onSurfaceVariant
+                )
             }
         }
     }
